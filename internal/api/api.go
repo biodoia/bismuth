@@ -636,6 +636,18 @@ func (s *Server) wsSubscribe(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
+
+	// Set sensible connection limits
+	conn.SetReadLimit(64 * 1024)
+	_ = conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+	_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	conn.SetPongHandler(func(string) error {
+		_ = conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+		return nil
+	})
+
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
 	defer conn.Close()
 
 	// Replay recent events so client catches up
@@ -645,11 +657,9 @@ func (s *Server) wsSubscribe(w http.ResponseWriter, r *http.Request) {
 		_ = conn.WriteMessage(websocket.TextMessage, b)
 	}
 
-	ctx, cancel := context.WithCancel(r.Context())
-	defer cancel()
 	ch := s.bus.Subscribe(ctx, conn, filter)
 
-	// write pump
+	// write pump: events from bus + ping ticker
 	go func() {
 		ticker := time.NewTicker(20 * time.Second)
 		defer ticker.Stop()
@@ -658,24 +668,28 @@ func (s *Server) wsSubscribe(w http.ResponseWriter, r *http.Request) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				_ = conn.WriteMessage(websocket.PingMessage, nil)
+				_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+				if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+					cancel()
+					return
+				}
+			case evt, ok := <-ch:
+				if !ok {
+					return
+				}
+				_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+				b, _ := json.Marshal(evt)
+				if err := conn.WriteMessage(websocket.TextMessage, b); err != nil {
+					cancel()
+					return
+				}
 			}
 		}
 	}()
 
-	// read pump (just to detect close)
-	go func() {
-		defer cancel()
-		for {
-			if _, _, err := conn.ReadMessage(); err != nil {
-				return
-			}
-		}
-	}()
-
-	for evt := range ch {
-		b, _ := json.Marshal(evt)
-		if err := conn.WriteMessage(websocket.TextMessage, b); err != nil {
+	// read pump: keep alive + detect close
+	for {
+		if _, _, err := conn.ReadMessage(); err != nil {
 			return
 		}
 	}
