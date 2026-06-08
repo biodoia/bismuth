@@ -118,7 +118,7 @@ func (m *Manager) Spawn(ctx context.Context, agentID, cli string, role string, c
 	m.panes[pane.ID] = pane
 	m.mu.Unlock()
 
-	go m.readLoop(pane)
+	go m.readLoop(pane, agentID)
 
 	// Persist + publish
 	_, _ = m.db.ExecContext(ctx,
@@ -180,23 +180,54 @@ func (m *Manager) Kill(ctx context.Context, paneID string) error {
 	return nil
 }
 
-func (m *Manager) readLoop(p *Pane) {
+// readLoop pumps PTY output into both:
+//   - in-memory scrollback buffer (for fast /read)
+//   - persistent DB blob (for /read and crash recovery)
+//   - bus events (for /ws realtime feed)
+func (m *Manager) readLoop(p *Pane, agentID string) {
 	buf := make([]byte, 4096)
 	for {
 		n, err := p.PTY.Read(buf)
 		if n > 0 {
+			chunk := buf[:n]
 			p.mu.Lock()
-			p.scrollback = append(p.scrollback, buf[:n]...)
+			p.scrollback = append(p.scrollback, chunk...)
 			if len(p.scrollback) > p.scrollMax*200 {
-				// truncate to last scrollMax bytes
 				p.scrollback = p.scrollback[len(p.scrollback)-p.scrollMax*100:]
 			}
 			p.mu.Unlock()
+
+			// persist (best-effort) + publish
+			_ = m.persistChunk(p, chunk)
+			_ = m.bus.Publish(context.Background(), bus.Event{
+				Type:    "pane_output",
+				AgentID: agentID,
+				Payload: shared.JSONRaw(map[string]any{"pane_id": p.ID, "bytes": len(chunk)}),
+				TS:      time.Now().UTC().Format(time.RFC3339),
+			})
 		}
 		if err != nil {
 			return
 		}
 	}
+}
+
+func (m *Manager) persistChunk(p *Pane, chunk []byte) error {
+	// throttled: only persist every 256 bytes or every 500ms.
+	// For V1 we just append every time; V2 use a coalescer.
+	const maxBlob = 200 * 1024
+	row := m.db.QueryRow(`SELECT scrollback FROM panes WHERE id = ?`, p.ID)
+	var cur sql.NullString
+	if err := row.Scan(&cur); err != nil {
+		return err
+	}
+	combined := cur.String + string(chunk)
+	if len(combined) > maxBlob {
+		combined = combined[len(combined)-maxBlob:]
+	}
+	_, err := m.db.Exec(`UPDATE panes SET scrollback = ?, last_state_at = ? WHERE id = ?`,
+		combined, time.Now().UTC().Format(time.RFC3339), p.ID)
+	return err
 }
 
 func newPaneID() string {
