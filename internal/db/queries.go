@@ -38,23 +38,59 @@ func nullableFloat(f float64) any { return f }
 // ----------------- agents ---------------------------------------------------
 
 type Agent struct {
-	ID           string
-	Role         string
-	Name         string
-	CLI          string
-	PID          sql.NullInt64
-	State        string
-	PaneID       sql.NullString
-	WorktreePath sql.NullString
-	Branch       sql.NullString
-	Model        sql.NullString
-	CostUSD      float64
-	TokensIn     int64
-	TokensOut    int64
-	TaskID       sql.NullString
-	CreatedAt    string
-	UpdatedAt    string
-	Meta         json.RawMessage
+	ID           string          `json:"id"`
+	Role         string          `json:"role"`
+	Name         string          `json:"name"`
+	CLI          string          `json:"cli"`
+	PID          sql.NullInt64   `json:"pid"`
+	State        string          `json:"state"`
+	PaneID       sql.NullString  `json:"pane_id"`
+	WorktreePath sql.NullString  `json:"worktree_path"`
+	Branch       sql.NullString  `json:"branch"`
+	Model        sql.NullString  `json:"model"`
+	CostUSD      float64         `json:"cost_usd"`
+	TokensIn     int64           `json:"tokens_in"`
+	TokensOut    int64           `json:"tokens_out"`
+	TaskID       sql.NullString  `json:"task_id"`
+	CreatedAt    string          `json:"created_at"`
+	UpdatedAt    string          `json:"updated_at"`
+	Meta         json.RawMessage `json:"meta"`
+}
+
+// MarshalJSON overrides default to render sql.Null* fields cleanly.
+func (a Agent) MarshalJSON() ([]byte, error) {
+	type Alias Agent // prevent recursion
+	return json.Marshal(&struct {
+		PID          *int64  `json:"pid"`
+		PaneID       *string `json:"pane_id"`
+		WorktreePath *string `json:"worktree_path"`
+		Branch       *string `json:"branch"`
+		Model        *string `json:"model"`
+		TaskID       *string `json:"task_id"`
+		*Alias
+	}{
+		Alias:        (*Alias)(&a),
+		PID:          nullInt64Ptr(a.PID),
+		PaneID:       nullStrPtr(a.PaneID),
+		WorktreePath: nullStrPtr(a.WorktreePath),
+		Branch:       nullStrPtr(a.Branch),
+		Model:        nullStrPtr(a.Model),
+		TaskID:       nullStrPtr(a.TaskID),
+	})
+}
+
+func nullStrPtr(ns sql.NullString) *string {
+	if ns.Valid {
+		return &ns.String
+	}
+	return nil
+}
+
+func nullInt64Ptr(ni sql.NullInt64) *int64 {
+	if ni.Valid {
+		return &ni.Int64
+	}
+	return nil
 }
 
 func (s *Store) InsertAgent(ctx context.Context, a *Agent) error {
@@ -163,24 +199,51 @@ func scanAgent(r rowScanner) (*Agent, error) {
 // ----------------- tasks ---------------------------------------------------
 
 type Task struct {
-	ID            string
-	Title         string
-	Description   sql.NullString
-	Status        string
-	Priority      int
-	ParentID      sql.NullString
-	AssigneeAgent sql.NullString
-	Plan          sql.NullString
-	Branch        sql.NullString
-	WorktreePath  sql.NullString
-	PRURL         sql.NullString
-	CostCeilUSD   float64
-	CostUsedUSD   float64
-	CreatedAt     string
-	UpdatedAt     string
-	StartedAt     sql.NullString
-	FinishedAt    sql.NullString
-	Meta          json.RawMessage
+	ID            string          `json:"id"`
+	Title         string          `json:"title"`
+	Description   sql.NullString  `json:"description"`
+	Status        string          `json:"status"`
+	Priority      int             `json:"priority"`
+	ParentID      sql.NullString  `json:"parent_id"`
+	AssigneeAgent sql.NullString  `json:"assignee_agent"`
+	Plan          sql.NullString  `json:"plan"`
+	Branch        sql.NullString  `json:"branch"`
+	WorktreePath  sql.NullString  `json:"worktree_path"`
+	PRURL         sql.NullString  `json:"pr_url"`
+	CostCeilUSD   float64         `json:"cost_ceil_usd"`
+	CostUsedUSD   float64         `json:"cost_used_usd"`
+	CreatedAt     string          `json:"created_at"`
+	UpdatedAt     string          `json:"updated_at"`
+	StartedAt     sql.NullString  `json:"started_at"`
+	FinishedAt    sql.NullString  `json:"finished_at"`
+	Meta          json.RawMessage `json:"meta"`
+}
+
+func (t Task) MarshalJSON() ([]byte, error) {
+	type Alias Task
+	return json.Marshal(&struct {
+		Description   *string `json:"description"`
+		ParentID      *string `json:"parent_id"`
+		AssigneeAgent *string `json:"assignee_agent"`
+		Plan          *string `json:"plan"`
+		Branch        *string `json:"branch"`
+		WorktreePath  *string `json:"worktree_path"`
+		PRURL         *string `json:"pr_url"`
+		StartedAt     *string `json:"started_at"`
+		FinishedAt    *string `json:"finished_at"`
+		*Alias
+	}{
+		Alias:         (*Alias)(&t),
+		Description:   nullStrPtr(t.Description),
+		ParentID:      nullStrPtr(t.ParentID),
+		AssigneeAgent: nullStrPtr(t.AssigneeAgent),
+		Plan:          nullStrPtr(t.Plan),
+		Branch:        nullStrPtr(t.Branch),
+		WorktreePath:  nullStrPtr(t.WorktreePath),
+		PRURL:         nullStrPtr(t.PRURL),
+		StartedAt:     nullStrPtr(t.StartedAt),
+		FinishedAt:    nullStrPtr(t.FinishedAt),
+	})
 }
 
 func (s *Store) InsertTask(ctx context.Context, t *Task) error {
@@ -329,19 +392,23 @@ func (s *Store) RecentEvents(ctx context.Context, types []string, agentID string
 		}
 		e.AgentID = ag.String
 		e.TaskID = ta.String
-		e.Payload = json.RawMessage(pl)
+		if pl != "" {
+			e.Payload = json.RawMessage(pl)
+		} else {
+			e.Payload = json.RawMessage("{}")
+		}
 		out = append(out, &e)
 	}
 	return out, rows.Err()
 }
 
 type StoredEvent struct {
-	Seq     int64
-	Type    string
-	AgentID string
-	TaskID  string
-	Payload json.RawMessage
-	TS      string
+	Seq     int64           `json:"seq"`
+	Type    string          `json:"type"`
+	AgentID string          `json:"agent_id"`
+	TaskID  string          `json:"task_id"`
+	Payload json.RawMessage `json:"payload"`
+	TS      string          `json:"ts"`
 }
 
 func placeholders(n int) string {
@@ -358,14 +425,27 @@ func placeholders(n int) string {
 // ----------------- messages (mailbox) -------------------------------------
 
 type Message struct {
-	ID         string
-	FromAgent  string
-	ToAgent    string
-	Kind       string
-	Body       string
-	TaskID     sql.NullString
-	ReadAt     sql.NullString
-	CreatedAt  string
+	ID        string         `json:"id"`
+	FromAgent string         `json:"from_agent"`
+	ToAgent   string         `json:"to_agent"`
+	Kind      string         `json:"kind"`
+	Body      string         `json:"body"`
+	TaskID    sql.NullString `json:"task_id"`
+	ReadAt    sql.NullString `json:"read_at"`
+	CreatedAt string         `json:"created_at"`
+}
+
+func (m Message) MarshalJSON() ([]byte, error) {
+	type Alias Message
+	return json.Marshal(&struct {
+		TaskID *string `json:"task_id"`
+		ReadAt *string `json:"read_at"`
+		*Alias
+	}{
+		Alias:  (*Alias)(&m),
+		TaskID: nullStrPtr(m.TaskID),
+		ReadAt: nullStrPtr(m.ReadAt),
+	})
 }
 
 func (s *Store) PostMessage(ctx context.Context, m *Message) error {

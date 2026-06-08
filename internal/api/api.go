@@ -39,6 +39,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"os/exec"
 	"strings"
 	"sync/atomic"
@@ -223,8 +224,16 @@ func (s *statusRecorder) WriteHeader(c int) {
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
+	b, err := json.Marshal(v)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "writeJSON marshal error: %v\n", err)
+		w.WriteHeader(500)
+		w.Write([]byte(`{"error":"marshal failed"}`))
+		return
+	}
 	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(v)
+	w.Write(b)
+	w.Write([]byte("\n"))
 }
 
 func writeErr(w http.ResponseWriter, code int, err error) {

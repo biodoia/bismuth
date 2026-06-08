@@ -82,7 +82,7 @@ func (b *Bus) Publish(ctx context.Context, evt Event) error {
 	}
 	res, err := b.db.ExecContext(ctx,
 		`INSERT INTO events(type, agent_id, task_id, payload, ts) VALUES(?,?,?,?,?)`,
-		evt.Type, nullStr(evt.AgentID), nullStr(evt.TaskID), string(evt.Payload), evt.TS)
+		evt.Type, nullStr(evt.AgentID), nullStr(evt.TaskID), safePayload(evt.Payload), evt.TS)
 	if err != nil {
 		return err
 	}
@@ -195,4 +195,11 @@ func nullStr(s string) any {
 		return nil
 	}
 	return s
+}
+
+func safePayload(p json.RawMessage) string {
+	if len(p) == 0 {
+		return "{}"
+	}
+	return string(p)
 }
