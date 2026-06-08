@@ -54,7 +54,7 @@ export function useBismuthWS(opts: WSOptions = {}) {
         backoffRef.current = 500;
       };
 
-      ws.onclose = (ev) => {
+      ws.onclose = (_ev) => {
         setConnected(false);
         if (closedRef.current) return;
         if (!opts.reconnect && opts.reconnect !== undefined) return;
@@ -62,13 +62,14 @@ export function useBismuthWS(opts: WSOptions = {}) {
         backoffRef.current = Math.min(backoffRef.current * 2, opts.maxBackoffMs ?? 30000);
       };
 
-      ws.onerror = (ev) => {
+      ws.onerror = () => {
         setError("ws error");
       };
 
       ws.onmessage = (ev) => {
         try {
-          const e: Event = JSON.parse(ev.data);
+          const data = ev.data;
+          const e: Event = JSON.parse(data);
           setEvents((prev) => [...prev.slice(-499), e]); // last 500
           handlersRef.current.forEach((h) => h(e));
         } catch {

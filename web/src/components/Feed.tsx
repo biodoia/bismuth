@@ -6,7 +6,6 @@
 
 import { useState, useEffect } from "react";
 import { useBismuthWS } from "../hooks/useWebSocket";
-import type { Event } from "../lib/types";
 
 const TYPE_COLOR: Record<string, string> = {
   agent_spawned: "text-emerald-400",

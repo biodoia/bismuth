@@ -34,15 +34,15 @@ export default function Voice() {
         audio.onended = () => URL.revokeObjectURL(url);
         audio.play();
       }
-    } catch (e: any) {
+    } catch (e: unknown) {
       setHistory((h) =>
-        h.map((e, i) => (i === 0 ? { ...e, action: "error: " + (e.message || "fail") } : e))
+        h.map((x, i) => (i === 0 ? { ...x, action: "error: " + ((e as Error)?.message || "fail") } : x))
       );
     }
   }, []);
 
   const { state, error, audioLevel, start, stop } = useRecorder(onTranscript);
-  const { speak, speaking: ttsSpeaking } = useTTS();
+  const { speaking: ttsSpeaking } = useTTS();
 
   const toggle = () => {
     if (state === "recording") stop();

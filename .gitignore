@@ -38,7 +38,10 @@ node_modules/
 dist/
 .vite/
 *.tsbuildinfo
+*.js
+!web/node_modules/.package-lock.json
 
 # Logs
 *.log
 logs/
+node_modules/
