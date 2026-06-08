@@ -56,6 +56,15 @@ type Pane struct {
 	scrollMax   int
 	lastState   string
 	lastStateAt time.Time
+
+	// Coalesced persistence: avoid DB churn on high-frequency output.
+	// Flush to DB when pending >= persistAfter bytes OR persistEvery
+	// has elapsed since the first chunk in the current batch.
+	pending      []byte
+	persistBytes int
+	persistAfter int           // default 256
+	persistEvery time.Duration // default 500ms
+	persistTimer *time.Timer
 }
 
 // NewManager creates a pane manager. It does not spawn anything yet.
@@ -213,10 +222,59 @@ func (m *Manager) readLoop(p *Pane, agentID string) {
 }
 
 func (m *Manager) persistChunk(p *Pane, chunk []byte) error {
-	// throttled: only persist every 256 bytes or every 500ms.
-	// For V1 we just append every time; V2 use a coalescer.
+	// Coalesced persistence: only write to DB when we've buffered
+	// persistAfter bytes OR persistEvery has elapsed. Avoids DB churn
+	// for high-frequency output (e.g. tail -f).
+	p.mu.Lock()
+	p.pending = append(p.pending, chunk...)
+	p.persistBytes += len(chunk)
+	threshold := p.persistAfter
+	timer := p.persistTimer
+	every := p.persistEvery
+	p.mu.Unlock()
+
+	if threshold <= 0 {
+		threshold = defaultPersistAfter
+	}
+	if every <= 0 {
+		every = defaultPersistEvery
+	}
+
+	flush := func() {
+		p.mu.Lock()
+		toFlush := p.pending
+		p.pending = nil
+		p.persistBytes = 0
+		if p.persistTimer != nil {
+			p.persistTimer.Stop()
+			p.persistTimer = nil
+		}
+		p.mu.Unlock()
+		if len(toFlush) == 0 {
+			return
+		}
+		_ = m.writeScrollback(p.ID, toFlush)
+	}
+
+	if p.persistBytes >= threshold {
+		flush()
+		return nil
+	}
+	if timer == nil {
+		p.mu.Lock()
+		// double-check inside the lock
+		if p.persistTimer == nil {
+			p.persistTimer = time.AfterFunc(every, flush)
+		}
+		p.mu.Unlock()
+	}
+	return nil
+}
+
+// writeScrollback does the actual DB write with truncation.
+func (m *Manager) writeScrollback(paneID string, chunk []byte) error {
 	const maxBlob = 200 * 1024
-	row := m.db.QueryRow(`SELECT scrollback FROM panes WHERE id = ?`, p.ID)
+	row := m.db.QueryRow(`SELECT scrollback FROM panes WHERE id = ?`, paneID)
 	var cur sql.NullString
 	if err := row.Scan(&cur); err != nil {
 		return err
@@ -226,7 +284,7 @@ func (m *Manager) persistChunk(p *Pane, chunk []byte) error {
 		combined = combined[len(combined)-maxBlob:]
 	}
 	_, err := m.db.Exec(`UPDATE panes SET scrollback = ?, last_state_at = ? WHERE id = ?`,
-		combined, time.Now().UTC().Format(time.RFC3339), p.ID)
+		combined, time.Now().UTC().Format(time.RFC3339), paneID)
 	return err
 }
 
@@ -234,3 +292,8 @@ func newPaneID() string {
 	// simple timestamp-based id; replace with ULID in V1 implementation
 	return fmt.Sprintf("pane-%d", time.Now().UnixNano())
 }
+
+const (
+	defaultPersistAfter = 256        // bytes
+	defaultPersistEvery = 500 * time.Millisecond
+)
