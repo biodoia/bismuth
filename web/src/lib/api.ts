@@ -62,3 +62,19 @@ export async function speak(text: string): Promise<Blob> {
   for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
   return new Blob([arr], { type: `audio/${format}` });
 }
+
+// voiceCommand: STT + parse + TTS in one call.
+// Returns { transcript, action, audio_url? }
+export async function voiceCommand(form: FormData, signal?: AbortSignal): Promise<{
+  transcript: string;
+  action: string;
+  audio_url?: string;
+}> {
+  const r = await fetch(`${base}/v1/voice/command`, {
+    method: "POST",
+    body: form,
+    signal,
+  });
+  if (!r.ok) throw new Error(`voiceCommand ${r.status}`);
+  return r.json();
+}
