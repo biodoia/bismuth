@@ -297,6 +297,9 @@ func scanTask(r rowScanner) (*Task, error) {
 
 // RecentEvents returns the last N events (for /api/v1/events).
 func (s *Store) RecentEvents(ctx context.Context, types []string, agentID string, limit int) ([]*StoredEvent, error) {
+	if limit <= 0 {
+		limit = 200
+	}
 	q := `SELECT seq, type, agent_id, task_id, payload, ts FROM events WHERE 1=1`
 	args := []any{}
 	if len(types) > 0 {

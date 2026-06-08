@@ -438,21 +438,25 @@ func (s *Server) readAgent(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, err)
 		return
 	}
-	if !a.PaneID.Valid {
-		writeErr(w, 409, errors.New("no pane"))
-		return
+	// try persisted scrollback first
+	if a.PaneID.Valid {
+		p, err := s.store.GetPane(r.Context(), a.PaneID.String)
+		if err == nil && p.Scrollback.Valid && p.Scrollback.String != "" {
+			writeJSON(w, 200, map[string]any{
+				"agent_id":   id,
+				"pane_id":    a.PaneID.String,
+				"scrollback": p.Scrollback.String,
+				"last_state": p.LastState.String,
+			})
+			return
+		}
 	}
-	// prefer persisted scrollback (more durable), fall back to live
-	p, err := s.store.GetPane(r.Context(), a.PaneID.String)
-	if err != nil {
-		writeErr(w, 500, err)
-		return
-	}
+	// empty pane (no scrollback yet, or no pane)
 	writeJSON(w, 200, map[string]any{
 		"agent_id":   id,
 		"pane_id":    a.PaneID.String,
-		"scrollback": p.Scrollback.String,
-		"last_state": p.LastState.String,
+		"scrollback": "",
+		"last_state": "",
 	})
 }
 
@@ -596,7 +600,7 @@ func (s *Server) WorktreeRoot(t *db.Task) string {
 // ----------------- misc handlers -----------------------------------------
 
 func (s *Server) listRoles(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, 200, s.catalog)
+	writeJSON(w, 200, map[string]any{"roles": s.catalog.Roles})
 }
 
 func (s *Server) recentEvents(w http.ResponseWriter, r *http.Request) {
