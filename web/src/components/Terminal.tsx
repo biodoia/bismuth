@@ -11,13 +11,14 @@ import { useEffect, useRef, useState } from "react";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import type { Agent, Event } from "../lib/types";
-import { listAgents } from "../lib/api";
+import { listAgents, sendToAgent } from "../lib/api";
 
 export default function Terminal() {
   const ref = useRef<HTMLDivElement>(null);
   const termRef = useRef<XTerm | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const bufferRef = useRef<string>("");
+  const selectedRef = useRef<string>("");
   const [agents, setAgents] = useState<Agent[]>([]);
   const [selected, setSelected] = useState<string>("");
   const [status, setStatus] = useState<"connecting" | "live" | "offline">("offline");
@@ -32,7 +33,10 @@ export default function Terminal() {
       fontSize: 12,
       convertEol: true,
       cursorBlink: true,
-      disableStdin: true,
+      // V1.1: stdin enabled for writeback. xterm.js requires the
+      // terminal to be focused for onData to fire. We enable it
+      // here and forward keystrokes to the worker via sendToAgent.
+      disableStdin: false,
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
@@ -43,6 +47,14 @@ export default function Terminal() {
     term.writeln("\x1b[2m— nessun agent selezionato —\x1b[0m");
     const onResize = () => fit.fit();
     window.addEventListener("resize", onResize);
+    // onData fires for every keypress; forward to selected agent
+    term.onData((data) => {
+      const ag = selectedRef.current;
+      if (!ag) return;
+      sendToAgent(ag, data).catch((err: unknown) => {
+        term.writeln(`\x1b[31m[send error: ${(err as Error)?.message || "fail"}]\x1b[0m`);
+      });
+    });
     return () => {
       window.removeEventListener("resize", onResize);
       term.dispose();
@@ -79,6 +91,8 @@ export default function Terminal() {
     ws.onopen = () => {
       setStatus("live");
       setError(null);
+      // Stash the selected agent in a ref so onData can read it
+      selectedRef.current = selected;
     };
     ws.onclose = () => {
       setStatus("offline");
