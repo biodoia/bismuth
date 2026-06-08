@@ -27,6 +27,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"github.com/biodoia/bismuth/internal/api"
@@ -156,10 +157,16 @@ func runTUI(cmd *cobra.Command, args []string) error {
 }
 
 func runMCP(cmd *cobra.Command, args []string) error {
-	// TODO(sessione+1): implement MCP server "bismuth-team" on stdio
-	// Tools: team_status, team_peers, team_post, team_read_inbox,
-	//        team_claim, team_finish, shared_memory
-	store, err := db.Open(context.Background(), defaultDBPath())
+	// /tmp is often 100% full on this host. Use a writable per-call
+	// path under the user's home.
+	dbPath := os.Getenv("BISMUTH_MCP_DB")
+	if dbPath == "" {
+		dbPath = os.Getenv("HOME") + "/.cache/bismuth/mcp.db"
+	}
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+		return err
+	}
+	store, err := db.Open(context.Background(), dbPath)
 	if err != nil {
 		return err
 	}
