@@ -1,0 +1,12 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html, body, #root { @apply h-full w-full; }
+}
+
+@layer components {
+  .panel { @apply bg-zinc-900 border border-zinc-800 rounded-md; }
+  .pulse-recording { @apply animate-pulse bg-red-600; }
+}

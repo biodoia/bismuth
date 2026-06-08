@@ -1,0 +1,75 @@
+# bismuth — config example
+# Copy to config.yaml and edit. NINEROUTER_URL/KEY must be set.
+
+server:
+  host: 0.0.0.0
+  port: 9000
+
+db:
+  path: ./data/bismuth.db
+
+pane:
+  default_shell: bash
+  workdir: ./.bismuth
+
+voice:
+  stt_provider: groq            # groq | deepgram | openai | gemini
+  stt_model: whisper-large-v3-turbo
+  tts_provider: edge            # edge | openai | elevenlabs | google
+  tts_voice: it-IT-IsabellaNeural
+  language: it
+  wake_word: bismuth
+  vad_silence_ms: 1500
+
+security:
+  allowed_commands:
+    - ls
+    - cat
+    - grep
+    - find
+    - git
+    - go
+    - npm
+    - node
+    - python
+    - pytest
+    - cargo
+    - rustc
+    - make
+    - echo
+    - pwd
+    - cd
+    - head
+    - tail
+    - wc
+    - tree
+    - curl
+  denied_commands:
+    - rm
+    - rmdir
+    - sudo
+    - su
+    - dd
+    - mkfs
+    - fdisk
+    - shutdown
+    - reboot
+    - halt
+    - poweroff
+    - kill -9
+  cost_ceiling_per_task_usd: 2.0
+  worktree_required: true
+  human_approval_for_push: true
+
+audit:
+  salt: REPLACE-WITH-32-BYTES-RANDOM-HEX
+
+ninerouter:
+  url: ${NINEROUTER_URL}
+  key: ${NINEROUTER_KEY}
+
+api:
+  tailscale_only: true
+  allowed_cidrs:
+    - 100.64.0.0/10     # tailscale
+    - 127.0.0.0/8

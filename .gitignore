@@ -1,0 +1,44 @@
+# bismuth .gitignore
+
+# Binaries
+/bin/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test artifacts
+/test/
+/coverage.out
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local config / secrets
+config.yaml
+config.local.yaml
+*.env
+.env
+
+# Runtime data
+/data/
+/db/
+*.db
+*.db-shm
+*.db-wal
+
+# Node
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+
+# Logs
+*.log
+logs/

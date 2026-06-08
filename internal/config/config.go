@@ -1,0 +1,157 @@
+// Package config loads the bismuth YAML config.
+//
+// Example config.yaml:
+//
+//   server:
+//     host: 0.0.0.0
+//     port: 9000
+//   db:
+//     path: ./data/bismuth.db
+//   voice:
+//     stt_provider: groq          # groq | deepgram | openai | gemini
+//     stt_model: whisper-large-v3-turbo
+//     tts_provider: edge          # edge | openai | elevenlabs | google
+//     tts_voice: it-IT-IsabellaNeural
+//   security:
+//     allowed_commands: [...]
+//     cost_ceiling_per_task_usd: 2.0
+//   audit:
+//     salt: changeme
+package config
+
+import (
+	"fmt"
+	"os"
+
+	"gopkg.in/yaml.v3"
+)
+
+type Config struct {
+	Server   ServerCfg   `yaml:"server"`
+	DB       DBCfg       `yaml:"db"`
+	Pane     PaneCfg     `yaml:"pane"`
+	Voice    VoiceCfg    `yaml:"voice"`
+	Security SecurityCfg `yaml:"security"`
+	Audit    AuditCfg    `yaml:"audit"`
+	NineR    NineRCfg    `yaml:"ninerouter"`
+	API      APICfg      `yaml:"api"`
+}
+
+type ServerCfg struct {
+	Host string `yaml:"host"`
+	Port int    `yaml:"port"`
+}
+
+type DBCfg struct {
+	Path string `yaml:"path"`
+}
+
+type PaneCfg struct {
+	DefaultShell string `yaml:"default_shell"`
+	Workdir      string `yaml:"workdir"`
+}
+
+type VoiceCfg struct {
+	STTProvider string `yaml:"stt_provider"`
+	STTModel    string `yaml:"stt_model"`
+	TTSProvider string `yaml:"tts_provider"`
+	TTSVoice    string `yaml:"tts_voice"`
+	Language    string `yaml:"language"`
+	WakeWord    string `yaml:"wake_word"`
+	VADMs       int    `yaml:"vad_silence_ms"`
+}
+
+type SecurityCfg struct {
+	AllowedCommands         []string `yaml:"allowed_commands"`
+	DeniedCommands          []string `yaml:"denied_commands"`
+	CostCeilingPerTaskUSD    float64  `yaml:"cost_ceiling_per_task_usd"`
+	WorktreeRequired        bool     `yaml:"worktree_required"`
+	HumanApprovalForPush    bool     `yaml:"human_approval_for_push"`
+}
+
+type AuditCfg struct {
+	Salt string `yaml:"salt"`
+}
+
+type NineRCfg struct {
+	URL string `yaml:"url"`
+	Key string `yaml:"key"`
+}
+
+type APICfg struct {
+	TailscaleOnly bool     `yaml:"tailscale_only"`
+	AllowedCIDRs  []string `yaml:"allowed_cidrs"`
+}
+
+func Load(path string) (*Config, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", path, err)
+	}
+	var c Config
+	if err := yaml.Unmarshal(b, &c); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", path, err)
+	}
+	c.applyDefaults()
+	if err := c.validate(); err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
+func (c *Config) applyDefaults() {
+	if c.Server.Host == "" {
+		c.Server.Host = "0.0.0.0"
+	}
+	if c.Server.Port == 0 {
+		c.Server.Port = 9000
+	}
+	if c.DB.Path == "" {
+		c.DB.Path = "./data/bismuth.db"
+	}
+	if c.Pane.DefaultShell == "" {
+		c.Pane.DefaultShell = "bash"
+	}
+	if c.Pane.Workdir == "" {
+		c.Pane.Workdir = "."
+	}
+	if c.Voice.STTProvider == "" {
+		c.Voice.STTProvider = "groq"
+		c.Voice.STTModel = "whisper-large-v3-turbo"
+	}
+	if c.Voice.TTSProvider == "" {
+		c.Voice.TTSProvider = "edge"
+		c.Voice.TTSVoice = "it-IT-IsabellaNeural"
+	}
+	if c.Voice.Language == "" {
+		c.Voice.Language = "it"
+	}
+	if c.Voice.VADMs == 0 {
+		c.Voice.VADMs = 1500
+	}
+	if c.Security.CostCeilingPerTaskUSD == 0 {
+		c.Security.CostCeilingPerTaskUSD = 2.0
+	}
+	if c.Security.AllowedCommands == nil {
+		c.Security.AllowedCommands = []string{
+			"ls", "cat", "grep", "find", "git", "go", "npm", "node",
+			"python", "pytest", "cargo", "rustc", "make", "echo",
+			"pwd", "cd", "head", "tail", "wc", "tree", "curl",
+		}
+	}
+	if c.Security.DeniedCommands == nil {
+		c.Security.DeniedCommands = []string{
+			"rm", "rmdir", "sudo", "su", "dd", "mkfs", "fdisk",
+			"shutdown", "reboot", "halt", "poweroff", "kill -9",
+		}
+	}
+	c.Security.WorktreeRequired = true
+	c.Security.HumanApprovalForPush = true
+}
+
+func (c *Config) validate() error {
+	if c.Audit.Salt == "" || c.Audit.Salt == "changeme" {
+		return fmt.Errorf("audit.salt must be set to a random string")
+	}
+	return nil
+}
