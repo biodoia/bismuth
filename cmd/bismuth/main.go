@@ -37,6 +37,8 @@ import (
 	"github.com/biodoia/bismuth/internal/hermes"
 	"github.com/biodoia/bismuth/internal/mcp"
 	"github.com/biodoia/bismuth/internal/pane"
+	"github.com/biodoia/bismuth/internal/roles"
+	"github.com/biodoia/bismuth/internal/security"
 	"github.com/biodoia/bismuth/internal/voice"
 	"github.com/spf13/cobra"
 )
@@ -136,7 +138,14 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}
 	defer voiceGW.Close()
 
-	srv := api.NewServer(cfg.API, sqlDB, busServer, paneMgr, voiceGW, auditLog)
+	sec := security.New(cfg.Security)
+	catalog := roles.DefaultCatalog()
+	repoRoot := cfg.Pane.Workdir
+	if repoRoot == "" || repoRoot == "." {
+		repoRoot = "."
+	}
+
+	srv := api.NewServer(cfg.API, store, busServer, paneMgr, voiceGW, auditLog, sec, catalog, repoRoot)
 	return srv.Run(ctx)
 }
 
