@@ -65,14 +65,15 @@ import (
 
 // Server bundles the dependencies.
 type Server struct {
-	cfg   config.APICfg
-	store *db.Store
-	bus   *bus.Bus
-	pane  *pane.Manager
-	voice *voice.Gateway
-	audit *audit.Log
-	sec   *security.Policy
-	mem   *sharedmem.Store
+	cfg    *config.Config
+	apicfg config.APICfg
+	store  *db.Store
+	bus    *bus.Bus
+	pane   *pane.Manager
+	voice  *voice.Gateway
+	audit  *audit.Log
+	sec    *security.Policy
+	mem    *sharedmem.Store
 
 	repoRoot string
 	catalog  roles.Catalog
@@ -83,7 +84,7 @@ type Server struct {
 
 // NewServer wires the HTTP routes.
 func NewServer(
-	cfg config.APICfg,
+	cfg *config.Config,
 	store *db.Store,
 	b *bus.Bus,
 	pm *pane.Manager,
@@ -95,6 +96,7 @@ func NewServer(
 ) *Server {
 	s := &Server{
 		cfg:      cfg,
+		apicfg:   cfg.API,
 		store:    store,
 		bus:      b,
 		pane:     pm,
@@ -186,7 +188,7 @@ func (s *Server) Run(ctx context.Context) error {
 
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !s.cfg.TailscaleOnly {
+		if !s.apicfg.TailscaleOnly {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -197,7 +199,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		}
 		ip := net.ParseIP(host)
 		allowed := ip != nil && (ip.IsLoopback() || isTailscale(ip))
-		for _, c := range s.cfg.AllowedCIDRs {
+		for _, c := range s.apicfg.AllowedCIDRs {
 			if _, n, _ := net.ParseCIDR(c); n != nil && n.Contains(ip) {
 				allowed = true
 			}
@@ -408,14 +410,20 @@ func (s *Server) spawnAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	cmd := []string{req.CLI}
 	cmd = append(cmd, req.Args...)
-	_, _ = s.pane.Spawn(r.Context(), agentID, req.CLI, role.ID, cmd, []string{
+	// Build env vars: BISMUTH_* + provider API keys from cli_env config
+	envVars := []string{
 		"BISMUTH_AGENT_ID=" + agentID,
 		"BISMUTH_ROLE=" + role.ID,
 		"BISMUTH_TASK_ID=" + taskID,
 		"BISMUTH_PANE_ID=" + paneID,
 		"BISMUTH_MODEL=" + role.DefaultModel,
 		"BISMUTH_WORKDIR=" + wtDir,
-	})
+	}
+	// Inject provider API keys (OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.)
+	if providerEnv := s.cfg.EnvForCLI(req.CLI); len(providerEnv) > 0 {
+		envVars = append(envVars, providerEnv...)
+	}
+	_, _ = s.pane.Spawn(r.Context(), agentID, req.CLI, role.ID, cmd, envVars)
 
 	_ = s.audit.Append(r.Context(), "user:lisergico25", "spawn_agent", agentID,
 		shared.JSONRaw(map[string]any{"role": role.ID, "cli": req.CLI, "task": taskID}))

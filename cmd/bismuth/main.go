@@ -147,7 +147,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		repoRoot = "."
 	}
 
-	srv := api.NewServer(cfg.API, store, busServer, paneMgr, voiceGW, auditLog, sec, catalog, repoRoot)
+	srv := api.NewServer(cfg, store, busServer, paneMgr, voiceGW, auditLog, sec, catalog, repoRoot)
 	return srv.Run(ctx)
 }
 

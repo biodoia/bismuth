@@ -1,0 +1,96 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "description": "Bismuth multi-agent multiplexer dashboard",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "title": "Agents Overview",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "targets": [
+        { "expr": "bismuth_agents_active", "legendFormat": "Active" },
+        { "expr": "bismuth_agents_spawned_total", "legendFormat": "Spawned" },
+        { "expr": "bismuth_agents_killed_total", "legendFormat": "Killed" }
+      ],
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "palette-classic" } }
+      }
+    },
+    {
+      "title": "Spawn / Kill Rate (5m)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 6, "y": 0 },
+      "targets": [
+        { "expr": "rate(bismuth_agents_spawned_total[5m])", "legendFormat": "spawn/sec" },
+        { "expr": "rate(bismuth_agents_killed_total[5m])", "legendFormat": "kill/sec" }
+      ]
+    },
+    {
+      "title": "API Latency (p50/p95/p99)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "targets": [
+        { "expr": "histogram_quantile(0.5, rate(bismuth_api_latency_seconds_bucket[5m]))", "legendFormat": "p50" },
+        { "expr": "histogram_quantile(0.95, rate(bismuth_api_latency_seconds_bucket[5m]))", "legendFormat": "p95" },
+        { "expr": "histogram_quantile(0.99, rate(bismuth_api_latency_seconds_bucket[5m]))", "legendFormat": "p99" }
+      ]
+    },
+    {
+      "title": "Events by Type",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "targets": [
+        { "expr": "rate(bismuth_events_total[5m])", "legendFormat": "{{type}}" }
+      ]
+    },
+    {
+      "title": "Tasks by Status",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 12 },
+      "targets": [
+        { "expr": "bismuth_tasks_created_total", "legendFormat": "Created" },
+        { "expr": "bismuth_tasks_finished_total", "legendFormat": "Finished" }
+      ]
+    },
+    {
+      "title": "LLM Token Usage",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 6, "y": 12 },
+      "targets": [
+        { "expr": "rate(bismuth_llm_tokens_total{type=\"input\"}[5m])", "legendFormat": "input tokens/sec" },
+        { "expr": "rate(bismuth_llm_tokens_total{type=\"output\"}[5m])", "legendFormat": "output tokens/sec" }
+      ]
+    },
+    {
+      "title": "LLM Cost ($/hr)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 18, "y": 12 },
+      "targets": [
+        { "expr": "rate(bismuth_llm_cost_cents_total[1h]) * 3600 / 100", "legendFormat": "$/hr" }
+      ]
+    },
+    {
+      "title": "HTTP Status Codes",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
+      "targets": [
+        { "expr": "rate(bismuth_http_requests_total[5m])", "legendFormat": "{{method}} {{path}} {{status}}" }
+      ]
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["bismuth", "agents", "multiplexer"],
+  "templating": { "list": [] },
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": {},
+  "timezone": "",
+  "title": "Bismuth Agent Multiplexer",
+  "uid": "bismuth-overview",
+  "version": 1
+}

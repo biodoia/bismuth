@@ -12,7 +12,7 @@
 - Build: `go build ./...` OK, `go test ./...` OK (14 test verdi)
 - Web: `web/` build OK (tsc strict + vite, 0 errori)
 - TUI: `bismuth tui` funziona (bubbletea v1, agent list + event feed)
-- Tailnet: `bismuth.biodoia.ts.net` → `:9000` (auth tailscale, aigoproxy)
+- Tailnet: `bismuth.biodoia.ts.net` via aigoproxy (:80 → localhost:9000, auth tailscale)
 
 ## P0 status — DONE (sessione 1)
 

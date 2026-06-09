@@ -22,19 +22,23 @@ package config
 import (
 	"fmt"
 	"os"
+	"regexp"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
 
 type Config struct {
-	Server   ServerCfg   `yaml:"server"`
-	DB       DBCfg       `yaml:"db"`
-	Pane     PaneCfg     `yaml:"pane"`
-	Voice    VoiceCfg    `yaml:"voice"`
-	Security SecurityCfg `yaml:"security"`
-	Audit    AuditCfg    `yaml:"audit"`
-	NineR    NineRCfg    `yaml:"ninerouter"`
-	API      APICfg      `yaml:"api"`
+	Server    ServerCfg          `yaml:"server"`
+	DB        DBCfg              `yaml:"db"`
+	Pane      PaneCfg            `yaml:"pane"`
+	Voice     VoiceCfg           `yaml:"voice"`
+	Security  SecurityCfg        `yaml:"security"`
+	Audit     AuditCfg           `yaml:"audit"`
+	NineR     NineRCfg           `yaml:"ninerouter"`
+	API       APICfg             `yaml:"api"`
+	Providers map[string]ProviderCfg `yaml:"providers"`
+	CLIEnv    map[string]map[string]string `yaml:"cli_env"`
 }
 
 type ServerCfg struct {
@@ -81,6 +85,11 @@ type NineRCfg struct {
 type APICfg struct {
 	TailscaleOnly bool     `yaml:"tailscale_only"`
 	AllowedCIDRs  []string `yaml:"allowed_cidrs"`
+}
+
+type ProviderCfg struct {
+	APIKey  string `yaml:"api_key"`
+	BaseURL string `yaml:"base_url"`
 }
 
 func Load(path string) (*Config, error) {
@@ -154,4 +163,37 @@ func (c *Config) validate() error {
 		return fmt.Errorf("audit.salt must be set to a random string")
 	}
 	return nil
+}
+
+var envVarRe = regexp.MustCompile(`\$\{([^}]+)\}`)
+
+// resolveEnv replaces ${VAR} patterns with the value of the
+// environment variable VAR. If VAR is not set, the pattern is
+// replaced with an empty string.
+func resolveEnv(s string) string {
+	return envVarRe.ReplaceAllStringFunc(s, func(match string) string {
+		name := strings.TrimSuffix(strings.TrimPrefix(match, "${"), "}")
+		return os.Getenv(name)
+	})
+}
+
+// EnvForCLI returns the environment variables that should be injected
+// when spawning an agent with the given CLI tool (omc, omx, etc.).
+// It resolves ${VAR} references from the cli_env config section.
+func (c *Config) EnvForCLI(cli string) []string {
+	if c.CLIEnv == nil {
+		return nil
+	}
+	envMap, ok := c.CLIEnv[cli]
+	if !ok {
+		return nil
+	}
+	var env []string
+	for k, v := range envMap {
+		resolved := resolveEnv(v)
+		if resolved != "" {
+			env = append(env, k+"="+resolved)
+		}
+	}
+	return env
 }

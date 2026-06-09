@@ -179,14 +179,27 @@ func toolList() []map[string]any {
 		},
 		{
 			"name":        "shared_memory",
-			"description": "Query the shared memory for prior decisions, specs, design notes. (V2: Cognee; V1: simple FTS5 fallback.)",
+			"description": "Query the shared memory for prior decisions, specs, design notes using FTS5 full-text search.",
 			"inputSchema": map[string]any{
 				"type":     "object",
 				"properties": map[string]any{
-					"query": map[string]any{"type": "string"},
+					"query": map[string]any{"type": "string", "description": "Full-text search query"},
 					"k":     map[string]any{"type": "integer", "default": 5},
 				},
 				"required": []string{"query"},
+			},
+		},
+		{
+			"name":        "memory_post",
+			"description": "Write a key-value memory entry to the shared memory. Tags are comma-separated.",
+			"inputSchema": map[string]any{
+				"type":     "object",
+				"properties": map[string]any{
+					"key":   map[string]any{"type": "string", "description": "Memory key (e.g. 'architecture decision', 'bug fix pattern')"},
+					"value": map[string]any{"type": "string", "description": "Memory content"},
+					"tags":  map[string]any{"type": "string", "description": "Comma-separated tags for categorization"},
+				},
+				"required": []string{"key", "value"},
 			},
 		},
 	}
@@ -218,6 +231,8 @@ func (s *Server) dispatchTool(ctx context.Context, id json.RawMessage, params js
 		s.toolFinish(ctx, id, p.Arguments)
 	case "shared_memory":
 		s.toolMemory(ctx, id, p.Arguments)
+	case "memory_post":
+		s.toolMemoryPost(ctx, id, p.Arguments)
 	default:
 		s.writeToolError(id, "unknown tool: "+p.Name)
 	}
@@ -458,38 +473,89 @@ func (s *Server) toolMemory(ctx context.Context, id json.RawMessage, args json.R
 	if a.K <= 0 {
 		a.K = 5
 	}
-	// V1: simple LIKE search across events.payload + tasks.description
-	// V2: Cognee graph + vector
-	q := "%" + strings.ReplaceAll(a.Query, `"`, `""`) + "%"
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT 'event' AS src, payload, ts FROM events WHERE payload LIKE ? ORDER BY seq DESC LIMIT ?`,
-		q, a.K)
+	// Try FTS5 first, fallback to LIKE
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT m.id, m.agent_id, m.key, m.value, m.tags, m.updated_at
+		FROM memories m
+		JOIN memories_fts f ON m.rowid = f.rowid
+		WHERE memories_fts MATCH ?
+		ORDER BY rank
+		LIMIT ?
+	`, a.Query, a.K)
 	if err != nil {
-		s.writeToolError(id, err.Error())
-		return
+		// Fallback: LIKE search on events.payload
+		q := "%" + strings.ReplaceAll(a.Query, `"`, `""`) + "%"
+		rows, err = s.db.QueryContext(ctx,
+			`SELECT 'event', '', 'event', payload, '', ts FROM events WHERE payload LIKE ? ORDER BY seq DESC LIMIT ?`,
+			q, a.K)
+		if err != nil {
+			s.writeToolError(id, err.Error())
+			return
+		}
 	}
 	defer rows.Close()
 	type hit struct {
-		Source  string `json:"source"`
-		Snippet string `json:"snippet"`
-		Score   int    `json:"score"`
+		ID        string `json:"id,omitempty"`
+		Source    string `json:"source"`
+		Key       string `json:"key"`
+		Snippet   string `json:"snippet"`
+		Tags      string `json:"tags,omitempty"`
+		UpdatedAt string `json:"updated_at,omitempty"`
 	}
 	var out []hit
 	for rows.Next() {
-		var src, payload, ts string
-		if err := rows.Scan(&src, &payload, &ts); err != nil {
+		var h hit
+		var id2, agentID, key, value, tags, updatedAt string
+		if err := rows.Scan(&id2, &agentID, &key, &value, &tags, &updatedAt); err != nil {
 			continue
 		}
-		// crude snippet: first 200 chars
-		snip := payload
+		h.ID = id2
+		h.Source = agentID
+		h.Key = key
+		h.Tags = tags
+		h.UpdatedAt = updatedAt
+		snip := value
 		if len(snip) > 200 {
 			snip = snip[:200] + "..."
 		}
-		// crude score: substring matches
-		score := strings.Count(strings.ToLower(payload), strings.ToLower(a.Query))
-		out = append(out, hit{Source: src, Snippet: snip, Score: score})
+		h.Snippet = snip
+		out = append(out, h)
 	}
 	s.writeResult(id, out)
+}
+
+type memoryPostArgs struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+	Tags  string `json:"tags"`
+}
+
+func (s *Server) toolMemoryPost(ctx context.Context, id json.RawMessage, args json.RawMessage) {
+	var a memoryPostArgs
+	if err := json.Unmarshal(args, &a); err != nil {
+		s.writeToolError(id, "invalid args: "+err.Error())
+		return
+	}
+	agentID := os.Getenv("BISMUTH_AGENT_ID")
+	if agentID == "" {
+		agentID = "unknown"
+	}
+	memID := fmt.Sprintf("mem-%d", time.Now().UnixNano())
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO memories (id, agent_id, key, value, tags, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, memID, agentID, a.Key, a.Value, a.Tags, now, now)
+	if err != nil {
+		s.writeToolError(id, "insert: "+err.Error())
+		return
+	}
+	s.writeResult(id, map[string]any{
+		"ok":        true,
+		"id":        memID,
+		"agent_id":  agentID,
+		"posted_at": now,
+	})
 }
 
 // ----------------- helpers ------------------------------------------------

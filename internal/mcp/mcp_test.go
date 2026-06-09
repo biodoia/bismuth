@@ -5,8 +5,8 @@ import "testing"
 
 func TestToolListShape(t *testing.T) {
 	tools := toolList()
-	if len(tools) != 7 {
-		t.Fatalf("expected 7 tools, got %d", len(tools))
+	if len(tools) != 8 {
+		t.Fatalf("expected 8 tools, got %d", len(tools))
 	}
 	want := map[string]bool{
 		"team_status":     false,
@@ -16,6 +16,7 @@ func TestToolListShape(t *testing.T) {
 		"team_claim":      false,
 		"team_finish":     false,
 		"shared_memory":   false,
+		"memory_post":     false,
 	}
 	for _, tool := range tools {
 		name, ok := tool["name"].(string)
