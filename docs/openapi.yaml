@@ -1,0 +1,497 @@
+openapi: 3.1.0
+info:
+  title: Bismuth Multi-Agent Multiplexer
+  version: 1.0.0
+  description: |
+    Bismuth orchestrates multiple AI coding agents (omc, omx, omo, omp)
+    with shared memory, cost tracking, and real-time WebSocket feeds.
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:9000
+    description: Local development
+  - url: https://bismuth.biodoia.ts.net
+    description: Tailnet (Tailscale auth required)
+
+paths:
+  /healthz:
+    get:
+      summary: Health check
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  ts:
+                    type: string
+                    format: date-time
+
+  /metrics:
+    get:
+      summary: Prometheus metrics
+      responses:
+        "200":
+          description: Prometheus text format
+
+  /api/v1/agents:
+    get:
+      summary: List agents
+      parameters:
+        - name: role
+          in: query
+          schema:
+            type: string
+        - name: state
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  agents:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Agent"
+    post:
+      summary: Spawn a new agent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SpawnRequest"
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SpawnResponse"
+
+  /api/v1/agents/{id}:
+    get:
+      summary: Get agent details
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Agent"
+
+  /api/v1/agents/{id}/read:
+    get:
+      summary: Read agent pane output
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: n
+          in: query
+          description: Lines to read
+          schema:
+            type: integer
+            default: 100
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  scrollback:
+                    type: string
+
+  /api/v1/agents/{id}/send:
+    post:
+      summary: Send data to agent pane stdin
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                data_b64:
+                  type: string
+                  description: Base64-encoded bytes
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+
+  /api/v1/agents/{id}/kill:
+    post:
+      summary: Kill an agent
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+
+  /api/v1/tasks:
+    get:
+      summary: List tasks
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tasks:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Task"
+    post:
+      summary: Create a task
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TaskCreate"
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Task"
+
+  /api/v1/tasks/{id}:
+    get:
+      summary: Get task details
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Task"
+
+  /api/v1/tasks/{id}/assign:
+    post:
+      summary: Assign task to agent
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+
+  /api/v1/tasks/{id}/merge:
+    post:
+      summary: Merge task branch
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+
+  /api/v1/events:
+    get:
+      summary: List recent events
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+        - name: type
+          in: query
+          schema:
+            type: string
+        - name: agent_id
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  events:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Event"
+
+  /api/v1/roles:
+    get:
+      summary: List available roles
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  roles:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        description:
+                          type: string
+                        default_model:
+                          type: string
+                        allowlist:
+                          type: array
+                          items:
+                            type: string
+
+  /api/v1/ws:
+    get:
+      summary: WebSocket real-time event feed
+      description: |
+        Upgrade to WebSocket. Sends JSON events as they arrive.
+        Client can send `{"action":"subscribe","agent_id":"..."}`
+        to filter events for a specific agent.
+      responses:
+        "101":
+          description: WebSocket upgrade
+
+  /v1/voice/stt:
+    post:
+      summary: Speech-to-text
+      requestBody:
+        content:
+          audio/webm:
+            schema:
+              type: string
+              format: binary
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  text:
+                    type: string
+
+  /v1/voice/speak:
+    post:
+      summary: Text-to-speech
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                text:
+                  type: string
+      responses:
+        "200":
+          content:
+            audio/mpeg:
+              schema:
+                type: string
+                format: binary
+
+components:
+  schemas:
+    Agent:
+      type: object
+      properties:
+        id:
+          type: string
+        role:
+          type: string
+        name:
+          type: string
+        cli:
+          type: string
+        state:
+          type: string
+          enum: [idle, running, killed, paused_cost]
+        cost_usd:
+          type: number
+        tokens_in:
+          type: integer
+        tokens_out:
+          type: integer
+        model:
+          type: string
+          nullable: true
+        pane_id:
+          type: string
+          nullable: true
+        worktree_path:
+          type: string
+          nullable: true
+        branch:
+          type: string
+          nullable: true
+        task_id:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+
+    Task:
+      type: object
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+          nullable: true
+        status:
+          type: string
+          enum: [open, claimed, in_progress, done, failed]
+        priority:
+          type: integer
+        cost_ceil_usd:
+          type: number
+        cost_used_usd:
+          type: number
+        branch:
+          type: string
+          nullable: true
+        worktree_path:
+          type: string
+          nullable: true
+        assignee:
+          type: string
+          nullable: true
+        plan:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+
+    Event:
+      type: object
+      properties:
+        seq:
+          type: integer
+        type:
+          type: string
+        agent_id:
+          type: string
+        task_id:
+          type: string
+        payload:
+          type: object
+        ts:
+          type: string
+          format: date-time
+
+    SpawnRequest:
+      type: object
+      required: [role, cli]
+      properties:
+        role:
+          type: string
+          description: "Agent role (implementer, planner, reviewer, etc.)"
+        cli:
+          type: string
+          description: "CLI tool to spawn (omc, omx, omo, omp, bash)"
+        task:
+          type: string
+          description: "Task description"
+        args:
+          type: array
+          items:
+            type: string
+
+    SpawnResponse:
+      type: object
+      properties:
+        agent_id:
+          type: string
+        pane_id:
+          type: string
+        task_id:
+          type: string
+        role:
+          type: string
+        worktree_path:
+          type: string
+        branch:
+          type: string
+
+    TaskCreate:
+      type: object
+      required: [title]
+      properties:
+        title:
+          type: string
+        description:
+          type: string
+        priority:
+          type: integer
+        cost_ceil_usd:
+          type: number

@@ -1,0 +1,21 @@
+# Litestream replication for bismuth SQLite database.
+# Install: https://litestream.io/install/
+# Usage: litestream replicate -config litestream.yaml
+
+dbs:
+  - path: data/bismuth.db
+    replicas:
+      # Local backup directory (retained for 7 days)
+      - url: file:///var/lib/bismuth/backups
+        retention: 168h
+        validation-interval: 1h
+
+      # S3-compatible (uncomment and configure)
+      # - url: s3://my-bucket/bismuth-db
+      #   retention: 720h  # 30 days
+      #   snapshot-interval: 1h
+      #   validation-interval: 1h
+
+      # SFTP (uncomment and configure)
+      # - url: sftp://user@host/path/to/backups
+      #   retention: 720h

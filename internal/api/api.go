@@ -41,6 +41,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -49,14 +50,17 @@ import (
 	"github.com/biodoia/bismuth/internal/bus"
 	"github.com/biodoia/bismuth/internal/config"
 	"github.com/biodoia/bismuth/internal/db"
+	"github.com/biodoia/bismuth/internal/metrics"
 	"github.com/biodoia/bismuth/internal/pane"
 	"github.com/biodoia/bismuth/internal/roles"
 	"github.com/biodoia/bismuth/internal/security"
 	"github.com/biodoia/bismuth/internal/shared"
+	"github.com/biodoia/bismuth/internal/sharedmem"
 	"github.com/biodoia/bismuth/internal/voice"
 	"github.com/biodoia/bismuth/internal/worktree"
 	"github.com/go-chi/chi/v5"
 	"github.com/gorilla/websocket"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 // Server bundles the dependencies.
@@ -68,6 +72,7 @@ type Server struct {
 	voice *voice.Gateway
 	audit *audit.Log
 	sec   *security.Policy
+	mem   *sharedmem.Store
 
 	repoRoot string
 	catalog  roles.Catalog
@@ -104,6 +109,8 @@ func NewServer(
 			CheckOrigin:     func(r *http.Request) bool { return true },
 		},
 	}
+	// Initialize shared memory store (nil-safe, 503 if FTS5 unavailable)
+	s.mem, _ = sharedmem.New(store.DB())
 	return s
 }
 
@@ -113,6 +120,10 @@ func (s *Server) Run(ctx context.Context) error {
 
 	r.Use(s.authMiddleware)
 	r.Use(loggingMiddleware)
+	r.Use(metricsMiddleware)
+
+	// Prometheus metrics endpoint
+	r.Handle("/metrics", promhttp.Handler())
 
 	r.Get("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "ts": time.Now().UTC()})
@@ -149,6 +160,10 @@ func (s *Server) Run(ctx context.Context) error {
 	r.Post("/v1/voice/stt", s.voiceSTT)
 	r.Post("/v1/voice/speak", s.voiceSpeak)
 	r.Post("/v1/voice/command", s.voiceCommand)
+
+	// shared memory
+	r.Post("/api/v1/memory", s.postMemory)
+	r.Get("/api/v1/memory", s.queryMemory)
 
 	addr := ":9000"
 	srv := &http.Server{
@@ -208,6 +223,32 @@ func loggingMiddleware(next http.Handler) http.Handler {
 		fmt.Fprintf(outWriter(), "%s %s %d %s\n",
 			r.Method, r.URL.Path, ww.status, time.Since(start))
 	})
+}
+
+// metricsMiddleware instruments every request with Prometheus counters and histograms.
+func metricsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		ww := &statusRecorder{ResponseWriter: w, status: 200}
+		next.ServeHTTP(ww, r)
+		elapsed := time.Since(start).Seconds()
+		path := normalizePath(r.URL.Path)
+		status := fmt.Sprintf("%d", ww.status)
+		metrics.APIRequests.WithLabelValues(r.Method, path, status).Inc()
+		metrics.APILatency.WithLabelValues(r.Method, path).Observe(elapsed)
+	})
+}
+
+// normalizePath collapses parameterized routes for label cardinality.
+func normalizePath(p string) string {
+	// Collapse /api/v1/agents/{id}/... variants
+	parts := strings.Split(p, "/")
+	for i, part := range parts {
+		if len(part) > 20 && strings.Contains(part, "-") {
+			parts[i] = "{id}"
+		}
+	}
+	return strings.Join(parts, "/")
 }
 
 type statusRecorder struct {
@@ -386,6 +427,8 @@ func (s *Server) spawnAgent(w http.ResponseWriter, r *http.Request) {
 		Payload: shared.JSONRaw(map[string]any{"role": role.ID, "cli": req.CLI, "pane_id": paneID}),
 		TS:      time.Now().UTC().Format(time.RFC3339),
 	})
+	metrics.IncAgentSpawned(role.ID, req.CLI)
+	metrics.IncEvent("agent_spawned")
 	writeJSON(w, 201, map[string]any{
 		"agent_id":      agentID,
 		"pane_id":       paneID,
@@ -486,6 +529,8 @@ func (s *Server) killAgent(w http.ResponseWriter, r *http.Request) {
 		AgentID: id,
 		TS:      time.Now().UTC().Format(time.RFC3339),
 	})
+	metrics.IncAgentKilled(a.Role)
+	metrics.IncEvent("agent_killed")
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
@@ -835,3 +880,65 @@ func firstWord(s string) string {
 // (e.g. "list git branches"). Off by default. Used by V1 TUI to fetch
 // repo info without spawning a worker.
 var _ = exec.Command
+
+// ----------------- shared memory handlers ---------------------------------
+
+func (s *Server) postMemory(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		AgentID string `json:"agent_id"`
+		Key     string `json:"key"`
+		Value   string `json:"value"`
+		Tags    string `json:"tags"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, 400, err)
+		return
+	}
+	if req.AgentID == "" || req.Key == "" || req.Value == "" {
+		writeErr(w, 400, errors.New("agent_id, key, value required"))
+		return
+	}
+	if s.mem == nil {
+		writeErr(w, 503, errors.New("shared memory not initialized"))
+		return
+	}
+	m := &sharedmem.Memory{
+		AgentID: req.AgentID,
+		Key:     req.Key,
+		Value:   req.Value,
+		Tags:    req.Tags,
+	}
+	if err := s.mem.Post(r.Context(), m); err != nil {
+		writeErr(w, 500, err)
+		return
+	}
+	writeJSON(w, 201, map[string]any{"ok": true, "id": m.ID})
+}
+
+func (s *Server) queryMemory(w http.ResponseWriter, r *http.Request) {
+	if s.mem == nil {
+		writeErr(w, 503, errors.New("shared memory not initialized"))
+		return
+	}
+	q := r.URL.Query().Get("q")
+	agentID := r.URL.Query().Get("agent_id")
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	if limit <= 0 {
+		limit = 20
+	}
+
+	var results []*sharedmem.Memory
+	var err error
+	if agentID != "" && q == "" {
+		results, err = s.mem.List(r.Context(), agentID, limit)
+	} else if q != "" {
+		results, err = s.mem.Query(r.Context(), q, limit)
+	} else {
+		results, err = s.mem.List(r.Context(), "", limit)
+	}
+	if err != nil {
+		writeErr(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"memories": results})
+}
