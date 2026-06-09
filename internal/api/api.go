@@ -117,7 +117,8 @@ func NewServer(
 }
 
 // Run starts the HTTP server until ctx is cancelled.
-func (s *Server) Run(ctx context.Context) error {
+// Handler returns the fully-wired HTTP handler (for testing with httptest).
+func (s *Server) Handler() http.Handler {
 	r := chi.NewRouter()
 
 	r.Use(s.authMiddleware)
@@ -158,7 +159,7 @@ func (s *Server) Run(ctx context.Context) error {
 	r.Get("/api/v1/events", s.recentEvents)
 	r.Get("/api/v1/ws", s.wsSubscribe)
 
-	// voice
+	// voice (V1 HTTP)
 	r.Post("/v1/voice/stt", s.voiceSTT)
 	r.Post("/v1/voice/speak", s.voiceSpeak)
 	r.Post("/v1/voice/command", s.voiceCommand)
@@ -172,10 +173,15 @@ func (s *Server) Run(ctx context.Context) error {
 	r.Post("/api/v1/memory", s.postMemory)
 	r.Get("/api/v1/memory", s.queryMemory)
 
+	return r
+}
+
+// Run starts the HTTP server on the configured port.
+func (s *Server) Run(ctx context.Context) error {
 	addr := ":9000"
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           r,
+		Handler:           s.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	logger.Info("bismuth listening", "addr", addr)
