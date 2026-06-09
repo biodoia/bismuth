@@ -15,10 +15,86 @@
 package security
 
 import (
+	"context"
 	"strings"
 
 	"github.com/biodoia/bismuth/internal/config"
 )
+
+// contextKey is used for storing the user in context.
+type contextKey string
+
+const userKey contextKey = "bismuth_user"
+
+// User represents an authenticated user extracted from Tailscale headers.
+type User struct {
+	Email   string
+	Name    string
+	Role    string // admin, operator, viewer
+	Tailscale bool
+}
+
+// Roles
+const (
+	RoleAdmin    = "admin"
+	RoleOperator = "operator"
+	RoleViewer   = "viewer"
+)
+
+// UserFromContext extracts the authenticated user from the request context.
+func UserFromContext(ctx context.Context) *User {
+	u, _ := ctx.Value(userKey).(*User)
+	return u
+}
+
+// ContextWithUser injects a user into the context.
+func ContextWithUser(ctx context.Context, u *User) context.Context {
+	return context.WithValue(ctx, userKey, u)
+}
+
+// UserFromHeaders extracts a User from Tailscale HTTP headers.
+//
+// Tailscale sets these headers when TailscaleServe or TailscaleFunnel is used:
+//   - Tailscale-User-Login: email (e.g. "sergio@example.com")
+//   - Tailscale-User-Name:  display name (e.g. "Sergio")
+//
+// If no headers are present, returns nil.
+func UserFromHeaders(email, name string) *User {
+	email = strings.TrimSpace(email)
+	if email == "" {
+		return nil
+	}
+	return &User{
+		Email:     email,
+		Name:      strings.TrimSpace(name),
+		Role:      RoleAdmin, // V1: all tailscale users are admins
+		Tailscale: true,
+	}
+}
+
+// CanSpawn returns true if the user can spawn agents.
+func (u *User) CanSpawn() bool {
+	if u == nil {
+		return false
+	}
+	return u.Role == RoleAdmin || u.Role == RoleOperator
+}
+
+// CanKill returns true if the user can kill agents.
+func (u *User) CanKill() bool {
+	if u == nil {
+		return false
+	}
+	return u.Role == RoleAdmin || u.Role == RoleOperator
+}
+
+// CanRead returns true if the user can read agents/tasks/events.
+func (u *User) CanRead() bool {
+	if u == nil {
+		return false
+	}
+	return true // all authenticated users can read
+}
 
 // Policy is the runtime security policy.
 type Policy struct {

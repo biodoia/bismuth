@@ -199,6 +199,14 @@ func (s *Server) Run(ctx context.Context) error {
 
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Extract Tailscale user headers (set by aigoproxy/tsnet)
+		if email := r.Header.Get("Tailscale-User-Login"); email != "" {
+			name := r.Header.Get("Tailscale-User-Name")
+			if u := security.UserFromHeaders(email, name); u != nil {
+				r = r.WithContext(security.ContextWithUser(r.Context(), u))
+			}
+		}
+
 		if !s.apicfg.TailscaleOnly {
 			next.ServeHTTP(w, r)
 			return
