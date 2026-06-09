@@ -36,6 +36,7 @@ import (
 	"github.com/biodoia/bismuth/internal/config"
 	"github.com/biodoia/bismuth/internal/db"
 	"github.com/biodoia/bismuth/internal/hermes"
+	"github.com/biodoia/bismuth/internal/logger"
 	"github.com/biodoia/bismuth/internal/mcp"
 	"github.com/biodoia/bismuth/internal/tui"
 	"github.com/biodoia/bismuth/internal/pane"
@@ -112,6 +113,8 @@ func runServe(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
+
+	logger.Init("bismuth", "text")
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()

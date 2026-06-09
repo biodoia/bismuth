@@ -39,7 +39,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -50,6 +49,7 @@ import (
 	"github.com/biodoia/bismuth/internal/bus"
 	"github.com/biodoia/bismuth/internal/config"
 	"github.com/biodoia/bismuth/internal/db"
+	"github.com/biodoia/bismuth/internal/logger"
 	"github.com/biodoia/bismuth/internal/metrics"
 	"github.com/biodoia/bismuth/internal/pane"
 	"github.com/biodoia/bismuth/internal/roles"
@@ -173,7 +173,7 @@ func (s *Server) Run(ctx context.Context) error {
 		Handler:           r,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-	fmt.Fprintln(outWriter(), "bismuth listening on", addr)
+	logger.Info("bismuth listening", "addr", addr)
 
 	go func() {
 		<-ctx.Done()
@@ -222,8 +222,7 @@ func loggingMiddleware(next http.Handler) http.Handler {
 		start := time.Now()
 		ww := &statusRecorder{ResponseWriter: w, status: 200}
 		next.ServeHTTP(ww, r)
-		fmt.Fprintf(outWriter(), "%s %s %d %s\n",
-			r.Method, r.URL.Path, ww.status, time.Since(start))
+		logger.Info("http", "method", r.Method, "path", r.URL.Path, "status", ww.status, "dur_ms", time.Since(start).Milliseconds())
 	})
 }
 
@@ -269,7 +268,7 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	b, err := json.Marshal(v)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "writeJSON marshal error: %v\n", err)
+		logger.Error("writeJSON marshal error", "err", err)
 		w.WriteHeader(500)
 		w.Write([]byte(`{"error":"marshal failed"}`))
 		return
@@ -282,42 +281,6 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 func writeErr(w http.ResponseWriter, code int, err error) {
 	writeJSON(w, code, map[string]any{"error": err.Error()})
 }
-
-func outWriter() io.Writer { return stdOut }
-
-var stdOut io.Writer = writerFor(nil)
-
-func writerFor(_ any) io.Writer { return defaultWriter() }
-
-func defaultWriter() io.Writer {
-	if _w == nil {
-		_w = newLockedWriter()
-	}
-	return _w
-}
-
-var _w io.Writer
-
-type lockedWriter struct{}
-
-func newLockedWriter() io.Writer { return &syncLocked{} }
-
-type syncLocked struct{}
-
-func (s *syncLocked) Write(p []byte) (int, error) { return writeStdout(p) }
-
-// indirection so tests can swap; in prod just writes to stdout
-func writeStdout(p []byte) (int, error) { return stdOutReal.Write(p) }
-
-var stdOutReal io.Writer = stdoutAdapter{}
-
-type stdoutAdapter struct{}
-
-func (stdoutAdapter) Write(p []byte) (int, error) {
-	return fmtPrint(p)
-}
-
-func fmtPrint(p []byte) (int, error) { return fmt.Print(string(p)) }
 
 // ----------------- agent handlers ----------------------------------------
 
