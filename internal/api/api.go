@@ -400,6 +400,10 @@ func (s *Server) spawnAgent(w http.ResponseWriter, r *http.Request) {
 	})
 	metrics.IncAgentSpawned(role.ID, req.CLI)
 	metrics.IncEvent("agent_spawned")
+	logger.Info("agent spawned",
+		"agent_id", agentID, "role", role.ID, "cli", req.CLI,
+		"task_id", taskID, "worktree", wtPath, "branch", branch,
+	)
 	writeJSON(w, 201, map[string]any{
 		"agent_id":      agentID,
 		"pane_id":       paneID,
