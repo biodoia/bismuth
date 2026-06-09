@@ -7,50 +7,76 @@
 ## Quick Reference
 
 - Build: `GOTMPDIR=/home/lisergico25/.tmp go build -o bin/bismuth ./cmd/bismuth`
-- Test: `GOTMPDIR=/home/lisergico25/.tmp go test ./...` (15 test su 6 package)
+- Test: `GOTMPDIR=/home/lisergico25/.tmp go test -count=1 ./internal/...` (17 test su 8 package)
 - Web: `cd web/ && npm run build` (tsc strict + vite, 0 errori)
 - TUI: `bismuth tui` (bubbletea v1, agent list + event feed, 3s refresh)
 - Server: `bismuth serve --config config.yaml` (porta 9000)
-- GOTMPDIR=/home/lisergico25/.tmp OBBLIGATORIO (la partizione /tmp è piena al 100%)
+- GOTMPDIR=/home/lisergico25/.tmp OBBLIGATORIO (/tmp piena al 100%)
 - Tailnet: `bismuth.biodoia.ts.net` via aigoproxy (:80 → localhost:9000, auth tailscale)
 - NOTA: la porta 9000 è solo localhost. aigoproxy espone solo :80 senza porta.
+- `go test ./...` senza GOTMPDIR può fallire — usare sempre il path esplicito
 
-## P0-P3 status — ALL DONE
+## P0-P5 status — ALL DONE
 
 - P0: scaffold, build, roles, pane, bus, db, API REST, WebSocket
 - P1: web (React+xterm+VAD+audit), prompts (12 ruoli), pane coalesce, MCP (8 tools)
 - P2: CI, Dockerfile, systemd, cost guardrail, TUI client bubbletea
 - P3: Prometheus metrics, shared memory FTS5, OpenAPI 3.1, Litestream, aigoproxy route
+- P4: LLM dispatch, MCP memory_post, Grafana dashboard, provider config
+- P5: Structured logging slog, LiveKit stub, alertmanager rules, meta-dev skill update
 
-## P4 status — DONE
-
-- P4-a: LLM dispatch (providers + cli_env + ${VAR} resolution)
-- P4-b: MCP memory_post (FTS5 query + write, 8 tools totali)
-- P4-c: Grafana dashboard (8 panels)
-- P4-d: aigoproxy verify (bismuth.biodoia.ts.net → localhost:9000)
-
-## P5 status — DONE (meta-dev)
+## P6 status — DONE
 
 | # | Item | Status | Commit |
 |---|------|--------|--------|
-| P5-1 | Structured logging slog | DONE | `49f4a7d` |
-| P5-2 | Git worktree isolation | DONE | già integrato in P0 |
-| P5-3 | LiveKit voice stub | DONE | `0c42af8` |
-| P5-4 | Alertmanager rules | DONE | `3dab861` |
-| P5-5 | meta-dev skill update | DONE | lessons bismuth |
+| P6-a | Fix Dependabot vulns | DONE | `4c8919b` |
+| P6-b | E2E test suite | DONE | `e704dbf` |
+| P6-c | Auth middleware + RBAC | DONE | `6b660e7` |
+| P6-d | Web UI polish | DONE | HEAD |
 
-## P6 backlog (prossima sessione)
+### P6-a: Dependabot fix
+- vitest → 4.1.8 (critical CVE)
+- vite → 8.0.16 (medium CVE)
+- chi/v5 → 5.3.0 (medium CVE)
+- esbuild upgraded via vite
+- 0 npm vulnerabilities after fix
+
+### P6-b: E2E test suite
+- `internal/api/api_test.go` — 11 test httptest.Server
+- `Handler()` method estrae chi.Router per testabilità
+- Covers: healthz, agents CRUD, roles, shared memory, voice rooms, metrics, 404, 400
+- Fixed: Go empty slice → JSON null (test accetta nil come lista vuota)
+- Tutti 17 test passano su 8 package
+
+### P6-c: Auth middleware + RBAC
+- `security.User` struct con Email/Name/Role
+- `UserFromHeaders` parse Tailscale-User-Login + Tailscale-User-Name
+- Context injection via `UserFromContext`/`ContextWithUser`
+- RBAC: admin/operator/viewer con CanSpawn/CanKill/CanRead
+- authMiddleware estrae user prima del IP check
+- V1: tutti gli utenti Tailscale sono admin
+- 6 test RBAC in `internal/security/rbac_test.go`
+
+### P6-d: Web UI polish
+- `Agents.tsx`: agent list live, spawn/kill, role icons, state badges color-coded
+- `Header.tsx`: branding, WS status, link events/metrics
+- Layout 4-zone desktop: agents|terminal|voice|feed
+- Mobile: tabs con agents come default
+
+## P7 backlog (prossima sessione)
 
 | # | Item | Note |
 |---|------|------|
-| P6-a | LiveKit SDK reale | `go get github.com/livekit/server-sdk-go`, SFU connect |
-| P6-b | Wake-word detection | Porcupine/OpenWakeWord |
-| P6-c | Cognee/Mem0 memory | Graph+vector, sostituire FTS5 |
-| P6-d | Telegram/Discord bridge | Bot per notifiche + comando remoto |
-| P6-e | Multi-tenant | Namespace isolation, per-team DB |
-| P6-f | Web UI polish | Drag-drop task assignment, agent status badges |
-| P6-g | Auth middleware reale | Tailscale-User header parsing + RBAC |
-| P6-h | E2E test suite | httptest.Server based, no real network |
+| P7-a | LiveKit SDK reale | `go get github.com/livekit/server-sdk-go` |
+| P7-b | Wake-word detection | Porcupine/OpenWakeWord |
+| P7-c | Cognee/Mem0 memory | Graph+vector, sostituire FTS5 |
+| P7-d | Telegram/Discord bridge | Bot per notifiche + comando remoto |
+| P7-e | Multi-tenant | Namespace isolation, per-team DB |
+| P7-f | Web code-splitting | Dynamic import, ridurre chunk size |
+| P7-g | User-based RBAC enforcement | enforce CanSpawn/CanKill negli handler |
+| P7-h | Audit trail UI | Visualizzare audit log nel web |
+| P7-i | Task drag-drop assignment | Assegnare task ad agenti via drag |
+| P7-j | Streaming agent output | SSE per agent output in real-time |
 
 ## Architettura chiave
 
@@ -68,28 +94,32 @@ internal/pane/          → PTY manager (coalesced scrollback 256B/500ms)
 internal/sharedmem/     → FTS5 shared memory (POST/QUERY/LIST/DELETE)
 internal/voice/         → STT/TTS gateway (ninerouter)
 internal/worktree/      → Git worktree isolation (branch + .bismuth/<task-id>)
+internal/security/      → Policy + RBAC (User, CanSpawn/Kill/Read)
 internal/costguard/     → Cost ceiling enforcement per task
+internal/audit/         → Audit log with salted hashing
 internal/tui/           → Bubbletea TUI client
-web/                    → React + xterm.js + VAD push-to-talk + audit timeline
+web/src/                → React 4-zone (Agents|Terminal|Voice|Feed) + Header
 prompts/                → 12 role prompts (implementer, reviewer, architect, etc.)
+docs/                   → Grafana dashboard, alertmanager rules, OpenAPI spec
 ```
 
 ## Decisioni chiave
 
 - `json.Marshal` + `w.Write` al posto di `json.NewEncoder` (encoder silenzioso su errori)
 - Custom `MarshalJSON` su struct con `sql.Null*` (null quando Valid=false)
-- `safePayload()` nel bus garantisce `"{}"` per payload vuoti
 - `writeJSON` con error logging via slog
-- bubbletea v1 (v2 ha breaking changes con lipgloss)
+- bubbletea v1.2.4 + lipgloss v1.0.0 (v2 breaking)
 - PWA disabilitata in V1 (ENOSPC su /tmp)
 - VAD con `@ricky0123/vad-web` (WebAssembly offline)
 - Provider API keys iniettate per CLI tool via `cli_env` config
 - FTS5 con fallback LIKE per shared memory query
-- aigoproxy route: `bismuth.biodoia.ts.net` SOLO porta 80, localhost:9000 è interno
-- slog per structured logging (sostituito fmt.Fprintf + log.Printf)
-- LiveKit come V2 voice path, V1 HTTP voice rimane default
-- Alerting: 9 rules in 3 groups (agents, api, cost)
+- slog per structured logging
+- LiveKit come V2 voice path, V1 HTTP voice default
+- chi/v5 5.3.0, vitest 4.1.8, vite 8.0.16
+- Handler() method per testabilità (chi.Router pubblico)
+- security.User + RBAC con Tailscale headers
+- V1 RBAC: tutti Tailscale users = admin
+- Go empty slice serializza come JSON null (non [])
+- `go test ./...` richiede GOTMPDIR esplicito
 
-## Blob count: 30 commits su main
-
-Ultimo: `3dab861 ops: Prometheus alertmanager rules for bismuth`
+## Commit count: 36 su main
