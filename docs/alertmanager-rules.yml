@@ -1,0 +1,99 @@
+# bismuth Alertmanager Rules
+#
+# Deploy alongside Prometheus. These rules monitor the bismuth multi-agent
+# multiplexer and fire alerts on cost overruns, error spikes, latency
+# degradation, and agent health issues.
+#
+# Usage:
+#   alertmanager --config.file=alertmanager.yml
+#   prometheus --config.file=prometheus.yml  (reference this file in rule_files)
+#
+# Requires Prometheus scraping bismuth:/metrics (see Grafana dashboard).
+
+groups:
+  - name: bismuth.agents
+    rules:
+      - alert: BismuthAgentSpawnFailures
+        expr: rate(bismuth_agents_spawned_total{status="error"}[5m]) > 0.1
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Agent spawn failures detected"
+          description: "{{ $value }} spawn errors/sec over 5m on role={{ $labels.role }} cli={{ $labels.cli }}"
+
+      - alert: BismuthAgentKillRateHigh
+        expr: rate(bismuth_agents_killed_total[5m]) > rate(bismuth_agents_spawned_total[5m]) * 1.5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Agent kill rate exceeds spawn rate"
+          description: "Agents are being killed faster than spawned — possible crash loop"
+
+      - alert: BismuthNoActiveAgents
+        expr: bismuth_active_agents == 0
+        for: 10m
+        labels:
+          severity: info
+        annotations:
+          summary: "No active agents"
+          description: "bismuth has 0 active agents for 10m — idle or crashed"
+
+  - name: bismuth.api
+    rules:
+      - alert: BismuthHighErrorRate
+        expr: rate(bismuth_errors_total[5m]) / rate(bismuth_events_total[5m]) > 0.05
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Error rate above 5%"
+          description: "{{ $value | printf \"%.1f\" }} error ratio over 5m"
+
+      - alert: BismuthHighLatency
+        expr: histogram_quantile(0.95, rate(bismuth_api_latency_seconds_bucket[5m])) > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "API p95 latency above 2s"
+          description: "p95={{ $value }}s — check agent spawn performance"
+
+      - alert: BismuthHighLatencyCritical
+        expr: histogram_quantile(0.99, rate(bismuth_api_latency_seconds_bucket[5m])) > 10
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: "API p99 latency above 10s"
+          description: "p99={{ $value }}s — possible resource exhaustion"
+
+  - name: bismuth.cost
+    rules:
+      - alert: BismuthCostSpike
+        expr: rate(bismuth_llm_cost_dollars_total[1h]) > 1.0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "LLM cost exceeds $1/hr"
+          description: "Current rate: ${{ $value }}/hr"
+
+      - alert: BismuthCostCritical
+        expr: rate(bismuth_llm_cost_dollars_total[1h]) > 5.0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "LLM cost exceeds $5/hr"
+          description: "Current rate: ${{ $value }}/hr — check for runaway agents"
+
+      - alert: BismuthTokenUsageHigh
+        expr: rate(bismuth_llm_tokens_total[1h]) > 500000
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Token usage above 500K/hr"
+          description: "{{ $value }} tokens/hr on model={{ $labels.model }}"
