@@ -37,6 +37,7 @@ import (
 	"github.com/biodoia/bismuth/internal/db"
 	"github.com/biodoia/bismuth/internal/hermes"
 	"github.com/biodoia/bismuth/internal/mcp"
+	"github.com/biodoia/bismuth/internal/tui"
 	"github.com/biodoia/bismuth/internal/pane"
 	"github.com/biodoia/bismuth/internal/roles"
 	"github.com/biodoia/bismuth/internal/security"
@@ -151,9 +152,11 @@ func runServe(cmd *cobra.Command, args []string) error {
 }
 
 func runTUI(cmd *cobra.Command, args []string) error {
-	// TODO(sessione +1): implement TUI client (charm.land/bubbletea/v2)
-	// Reuses herdr detector patterns. Connects to bismuth server via WS.
-	return fmt.Errorf("TUI client not yet implemented (V1 backlog F-extra)")
+	baseURL := os.Getenv("BISMUTH_URL")
+	if baseURL == "" {
+		baseURL = "http://127.0.0.1:9000"
+	}
+	return tui.Run(baseURL)
 }
 
 func runMCP(cmd *cobra.Command, args []string) error {

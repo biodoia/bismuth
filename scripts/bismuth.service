@@ -1,29 +1,26 @@
 [Unit]
-Description=bismuth — multi-agent coding team multiplexer
+Description=Bismuth multi-agent multiplexer
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-User=lisergico25
-WorkingDirectory=/home/lisergico25/projects/bismuth
-ExecStart=/home/lisergico25/projects/bismuth/bin/bismuth serve --config /home/lisergico25/projects/bismuth/config.yaml
+User=bismuth
+Group=bismuth
+ExecStart=/usr/local/bin/bismuth serve --config /etc/bismuth/config.yaml
 Restart=on-failure
-RestartSec=5s
-Environment=GOTMPDIR=/home/lisergico25/.tmp
-EnvironmentFile=-/home/lisergico25/projects/bismuth/.env
+RestartSec=5
+LimitNOFILE=65536
 
-# Hardening (OWASP ASI10 - rogue agents)
+# Security hardening
 NoNewPrivileges=true
-PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/home/lisergico25/projects/bismuth/data /home/lisergico25/projects/bismuth/.bismuth
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
-RestrictNamespaces=true
-RestrictRealtime=true
-LockPersonality=true
-MemoryDenyWriteExecute=true
+ReadWritePaths=/var/lib/bismuth /run/bismuth
+PrivateTmp=true
+
+Environment=GOTMPDIR=/var/lib/bismuth/tmp
+Environment=HOME=/var/lib/bismuth
 
 [Install]
 WantedBy=multi-user.target
