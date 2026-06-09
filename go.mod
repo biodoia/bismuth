@@ -6,7 +6,7 @@ require (
 	github.com/charmbracelet/bubbletea v1.2.4
 	github.com/charmbracelet/lipgloss v1.0.0
 	github.com/charmbracelet/x/xpty v0.1.0
-	github.com/go-chi/chi/v5 v5.1.0
+	github.com/go-chi/chi/v5 v5.2.2
 	github.com/gorilla/websocket v1.5.3
 	github.com/spf13/cobra v1.8.1
 	gopkg.in/yaml.v3 v3.0.1
