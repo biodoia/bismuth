@@ -163,6 +163,11 @@ func (s *Server) Run(ctx context.Context) error {
 	r.Post("/v1/voice/speak", s.voiceSpeak)
 	r.Post("/v1/voice/command", s.voiceCommand)
 
+	// voice rooms (LiveKit stub)
+	r.Post("/api/v1/voice/rooms", s.createVoiceRoom)
+	r.Get("/api/v1/voice/rooms", s.listVoiceRooms)
+	r.Post("/api/v1/voice/rooms/end", s.endVoiceRoom)
+
 	// shared memory
 	r.Post("/api/v1/memory", s.postMemory)
 	r.Get("/api/v1/memory", s.queryMemory)
@@ -916,4 +921,43 @@ func (s *Server) queryMemory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]any{"memories": results})
+}
+
+// ----------------- voice room handlers (LiveKit stub) ---------------------
+
+func (s *Server) createVoiceRoom(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		AgentID string `json:"agent_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, 400, err)
+		return
+	}
+	if req.AgentID == "" {
+		writeErr(w, 400, fmt.Errorf("agent_id required"))
+		return
+	}
+	logger.Info("voice room create request", "agent_id", req.AgentID)
+	// Stub: return placeholder room info
+	writeJSON(w, 201, map[string]any{
+		"room_name": "bismuth-" + req.AgentID,
+		"agent_id":  req.AgentID,
+		"state":     "active",
+		"note":      "LiveKit stub — connect real SFU for production",
+	})
+}
+
+func (s *Server) listVoiceRooms(w http.ResponseWriter, r *http.Request) {
+	// Stub: return empty list
+	writeJSON(w, 200, map[string]any{"rooms": []any{}})
+}
+
+func (s *Server) endVoiceRoom(w http.ResponseWriter, r *http.Request) {
+	roomName := r.URL.Query().Get("room")
+	if roomName == "" {
+		writeErr(w, 400, fmt.Errorf("room query param required"))
+		return
+	}
+	logger.Info("voice room end request", "room", roomName)
+	writeJSON(w, 200, map[string]any{"room": roomName, "state": "ended"})
 }
