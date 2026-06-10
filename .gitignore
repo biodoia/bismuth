@@ -29,6 +29,8 @@ config.local.yaml
 # Runtime data
 /data/
 /db/
+# Per-agent workdir: git worktrees + scratch created when spawning agents
+.bismuth/
 *.db
 *.db-shm
 *.db-wal
