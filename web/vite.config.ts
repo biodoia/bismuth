@@ -1,5 +1,6 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
 import { VitePWA } from "vite-plugin-pwa";
 
 // bismuth web PWA config.
@@ -14,6 +15,7 @@ const pwaEnabled = process.env.VITE_PWA === "1";
 export default defineConfig({
   plugins: [
     react(),
+    tailwindcss(),
     ...(pwaEnabled
       ? [
           VitePWA({
