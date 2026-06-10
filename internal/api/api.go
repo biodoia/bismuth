@@ -405,7 +405,24 @@ func (s *Server) spawnAgent(w http.ResponseWriter, r *http.Request) {
 	if providerEnv := s.cfg.EnvForCLI(req.CLI); len(providerEnv) > 0 {
 		envVars = append(envVars, providerEnv...)
 	}
-	_, _ = s.pane.Spawn(r.Context(), agentID, req.CLI, role.ID, cmd, envVars)
+	// PaneID must match the id stored on the agent so /read, /send and
+	// /kill resolve the same pane. The worker runs in its worktree and
+	// receives the task as its first prompt.
+	if _, err := s.pane.Spawn(r.Context(), pane.SpawnSpec{
+		AgentID:      agentID,
+		PaneID:       paneID,
+		CLI:          req.CLI,
+		Role:         role.ID,
+		Workdir:      wtDir,
+		Cmd:          cmd,
+		Env:          envVars,
+		InitialInput: []byte(req.Task),
+	}); err != nil {
+		logger.Error("spawn worker failed", "agent_id", agentID, "cli", req.CLI, "err", err)
+		_ = s.store.UpdateAgentState(r.Context(), agentID, "failed")
+		writeErr(w, 500, fmt.Errorf("spawn worker: %w", err))
+		return
+	}
 
 	_ = s.audit.Append(r.Context(), "user:lisergico25", "spawn_agent", agentID,
 		shared.JSONRaw(map[string]any{"role": role.ID, "cli": req.CLI, "task": taskID}))
