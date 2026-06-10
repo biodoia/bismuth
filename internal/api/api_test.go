@@ -56,7 +56,10 @@ func newTestEnv(t *testing.T) *testEnv {
 	auditLog, _ := audit.New(sqlDB, "test-salt-do-not-use-in-prod")
 	sec := security.New(config.SecurityCfg{})
 
-	srv := NewServer(cfg, store, busServer, pm, voiceGW, auditLog, sec, catalog, ".")
+	// repoRoot lives in a throwaway dir (not a git repo): worktree
+	// creation fails best-effort, and tests never register worktrees
+	// or branches in the real repository.
+	srv := NewServer(cfg, store, busServer, pm, voiceGW, auditLog, sec, catalog, t.TempDir())
 
 	ts := httptest.NewServer(srv.Handler())
 
@@ -304,6 +307,40 @@ func TestSpawnInvalidRole(t *testing.T) {
 	})
 	if resp.StatusCode != 400 {
 		t.Fatalf("expected 400, got %d", resp.StatusCode)
+	}
+}
+
+// TestRBACEnforcement verifies P7-g: an authenticated viewer cannot
+// spawn, send to, or kill agents (403), while requests without a user
+// (localhost CLI) keep working — covered by the other spawn tests.
+func TestRBACEnforcement(t *testing.T) {
+	env := newTestEnv(t)
+	defer env.Close()
+
+	viewer := &security.User{Email: "viewer@example.com", Role: security.RoleViewer}
+	h := env.srv.Handler()
+
+	do := func(method, path string, payload any) int {
+		var rdr io.Reader
+		if payload != nil {
+			b, _ := json.Marshal(payload)
+			rdr = bytes.NewReader(b)
+		}
+		req := httptest.NewRequest(method, path, rdr)
+		req = req.WithContext(security.ContextWithUser(req.Context(), viewer))
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+		return w.Code
+	}
+
+	if code := do("POST", "/api/v1/agents", map[string]any{"role": "implementer", "cli": "bash", "task": "x"}); code != 403 {
+		t.Errorf("viewer spawn: got %d, want 403", code)
+	}
+	if code := do("POST", "/api/v1/agents/agt-x/send", map[string]any{"data_b64": "bHM="}); code != 403 {
+		t.Errorf("viewer send: got %d, want 403", code)
+	}
+	if code := do("POST", "/api/v1/agents/agt-x/kill", nil); code != 403 {
+		t.Errorf("viewer kill: got %d, want 403", code)
 	}
 }
 

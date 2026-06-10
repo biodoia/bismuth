@@ -3,17 +3,15 @@
 // Each pane wraps:
 //   - a PTY (charmbracelet/x/xpty) running the worker CLI
 //   - a scrollback buffer (last N lines, ANSI)
-//   - a state detector (delegated to herdr/HERDR semantics in V2; V1
-//     uses a simple prompt-based heuristic: if the CLI shows a known
-//     "working" indicator, state=working; if it shows the prompt, state=idle)
+//   - a state detector (V1 heuristic: output activity means the worker
+//     is working; a short quiet period means it is idle)
 //
 // The multiplexer exposes:
 //
-//   - spawn(agentID, cli, role, args...) -> pane_id
-//   - send(pane_id, bytes)               // stdin write
-//   - read(pane_id, n)                   // last N lines
-//   - kill(pane_id)                      // SIGTERM, escalate SIGKILL
-//   - attach(pane_id, ws)                // stream I/O via WebSocket
+//   - Spawn(spec)        -> pane
+//   - Send(pane_id, b)   // stdin write
+//   - Read(pane_id, n)   // last N lines
+//   - Kill(pane_id)      // close the PTY
 package pane
 
 import (
@@ -22,6 +20,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -41,6 +40,10 @@ type Manager struct {
 	// typing its task/prompt, giving the CLI time to bring up its input
 	// loop. Set to 0 in tests for determinism.
 	initialInputDelay time.Duration
+
+	// idleAfter is how long a pane must stay silent before the V1 state
+	// heuristic flips it from "working" to "idle".
+	idleAfter time.Duration
 
 	mu    sync.RWMutex
 	panes map[string]*Pane
@@ -71,6 +74,9 @@ type Pane struct {
 	persistAfter int           // default 256
 	persistEvery time.Duration // default 500ms
 	persistTimer *time.Timer
+
+	// stateTimer flips the pane to "idle" after a quiet period.
+	stateTimer *time.Timer
 }
 
 // NewManager creates a pane manager. It does not spawn anything yet.
@@ -81,6 +87,7 @@ func NewManager(db *sql.DB, b *bus.Bus, cfg config.PaneCfg) *Manager {
 		cfg:               cfg,
 		panes:             make(map[string]*Pane),
 		initialInputDelay: defaultInitialInputDelay,
+		idleAfter:         defaultIdleAfter,
 	}
 }
 
@@ -89,6 +96,16 @@ func (m *Manager) Close() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for id, p := range m.panes {
+		p.mu.Lock()
+		if p.stateTimer != nil {
+			p.stateTimer.Stop()
+			p.stateTimer = nil
+		}
+		if p.persistTimer != nil {
+			p.persistTimer.Stop()
+			p.persistTimer = nil
+		}
+		p.mu.Unlock()
 		_ = p.PTY.Close()
 		delete(m.panes, id)
 	}
@@ -113,12 +130,13 @@ type SpawnSpec struct {
 	// InitialInput is the task/prompt delivered to the worker's stdin once
 	// it starts, as if a human typed it and pressed Enter.
 	InitialInput []byte
+	// MCPConfig, when non-empty, is written to <workdir>/.mcp.json before
+	// the worker starts, so CLIs that read it pick up the bismuth-team MCP
+	// server. Best-effort: a write failure does not abort the spawn.
+	MCPConfig []byte
 }
 
 // Spawn starts a worker process and registers it.
-//
-// TODO(sessione+1): wire to MCP installer (write .mcp.json in workdir
-// before spawn), push state events.
 func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Pane, error) {
 	if len(spec.Cmd) == 0 {
 		return nil, fmt.Errorf("cmd must not be empty")
@@ -127,6 +145,12 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Pane, error) {
 	workdir := spec.Workdir
 	if workdir == "" {
 		workdir = m.cfg.Workdir
+	}
+
+	// MCP installer: drop the team MCP config where the worker CLI will
+	// look for it. Best-effort — the worker is still useful without it.
+	if len(spec.MCPConfig) > 0 && workdir != "" {
+		_ = os.WriteFile(filepath.Join(workdir, ".mcp.json"), spec.MCPConfig, 0o644)
 	}
 
 	p, err := xpty.NewPty(120, 40)
@@ -164,14 +188,9 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Pane, error) {
 	m.panes[pane.ID] = pane
 	m.mu.Unlock()
 
-	go m.readLoop(pane, spec.AgentID)
-
-	// Deliver the task as the worker's first input.
-	if len(spec.InitialInput) > 0 {
-		go m.deliverInitialInput(pane, spec.InitialInput)
-	}
-
-	// Persist + publish
+	// Persist + publish before the I/O goroutines start: state
+	// transitions (working/idle/exited) UPDATE this row and must never
+	// race with — or be overwritten by — the initial INSERT.
 	_, _ = m.db.ExecContext(ctx,
 		`INSERT INTO panes(id, agent_id, last_state, last_state_at) VALUES(?,?,?,?)`,
 		pane.ID, spec.AgentID, pane.lastState, time.Now().UTC().Format(time.RFC3339))
@@ -181,6 +200,18 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Pane, error) {
 		Payload: shared.JSONRaw(map[string]any{"pane_id": pane.ID, "cli": spec.CLI, "role": spec.Role, "cmd": spec.Cmd}),
 		TS:      time.Now().UTC().Format(time.RFC3339),
 	})
+
+	go m.readLoop(pane, spec.AgentID)
+
+	// The PTY master does not see EOF while we hold the slave side open,
+	// so child exit is detected by reaping the process directly.
+	go m.watchExit(pane, spec.AgentID, c)
+
+	// Deliver the task as the worker's first input.
+	if len(spec.InitialInput) > 0 {
+		go m.deliverInitialInput(pane, spec.InitialInput)
+	}
+
 	return pane, nil
 }
 
@@ -208,7 +239,7 @@ func (m *Manager) Send(ctx context.Context, paneID string, b []byte) error {
 	return err
 }
 
-// Read returns the last n lines of scrollback.
+// Read returns the last n lines of scrollback (all of it when n <= 0).
 func (m *Manager) Read(paneID string, n int) ([]byte, error) {
 	m.mu.RLock()
 	p, ok := m.panes[paneID]
@@ -218,8 +249,31 @@ func (m *Manager) Read(paneID string, n int) ([]byte, error) {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	// TODO(sessione+1): split ANSI-aware, return last n lines.
-	return p.scrollback, nil
+	return LastLines(p.scrollback, n), nil
+}
+
+// LastLines returns the last n lines of b. Splitting happens on '\n'
+// only, so ANSI escape sequences (which never contain a newline) are
+// kept intact within their line. n <= 0 returns b unchanged.
+func LastLines(b []byte, n int) []byte {
+	if n <= 0 || len(b) == 0 {
+		return b
+	}
+	// Ignore a trailing newline so "a\nb\n" counts as two lines.
+	end := len(b)
+	if b[end-1] == '\n' {
+		end--
+	}
+	seen := 0
+	for i := end - 1; i >= 0; i-- {
+		if b[i] == '\n' {
+			seen++
+			if seen == n {
+				return b[i+1:]
+			}
+		}
+	}
+	return b
 }
 
 // Kill terminates the pane.
@@ -233,6 +287,12 @@ func (m *Manager) Kill(ctx context.Context, paneID string) error {
 	if !ok {
 		return fmt.Errorf("pane %s not found", paneID)
 	}
+	p.mu.Lock()
+	if p.stateTimer != nil {
+		p.stateTimer.Stop()
+		p.stateTimer = nil
+	}
+	p.mu.Unlock()
 	_ = p.PTY.Close()
 	_ = m.bus.Publish(ctx, bus.Event{
 		Type:    "pane_killed",
@@ -268,11 +328,76 @@ func (m *Manager) readLoop(p *Pane, agentID string) {
 				Payload: shared.JSONRaw(map[string]any{"pane_id": p.ID, "bytes": len(chunk)}),
 				TS:      time.Now().UTC().Format(time.RFC3339),
 			})
+
+			// V1 state heuristic: output means working; quiet means idle.
+			m.markState(p, agentID, "working")
+			m.armIdleTimer(p, agentID)
 		}
 		if err != nil {
+			// Process exited or PTY closed.
+			p.mu.Lock()
+			if p.stateTimer != nil {
+				p.stateTimer.Stop()
+				p.stateTimer = nil
+			}
+			p.mu.Unlock()
+			m.markState(p, agentID, "exited")
 			return
 		}
 	}
+}
+
+// watchExit reaps the worker process and marks the pane exited. This is
+// the reliable exit signal: readLoop alone never sees EOF because the
+// pane keeps the PTY slave open on the parent side.
+func (m *Manager) watchExit(p *Pane, agentID string, c *exec.Cmd) {
+	_ = c.Wait()
+	p.mu.Lock()
+	if p.stateTimer != nil {
+		p.stateTimer.Stop()
+		p.stateTimer = nil
+	}
+	p.mu.Unlock()
+	m.markState(p, agentID, "exited")
+}
+
+// markState records a state transition for the pane (and its agent),
+// persisting it and publishing an agent_state event. No-op when the
+// state is unchanged; "exited" is terminal.
+func (m *Manager) markState(p *Pane, agentID, state string) {
+	p.mu.Lock()
+	if p.lastState == state || p.lastState == "exited" {
+		p.mu.Unlock()
+		return
+	}
+	p.lastState = state
+	p.lastStateAt = time.Now()
+	p.mu.Unlock()
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, _ = m.db.Exec(`UPDATE panes SET last_state=?, last_state_at=? WHERE id=?`, state, now, p.ID)
+	_, _ = m.db.Exec(`UPDATE agents SET state=?, updated_at=? WHERE id=? AND state NOT IN ('killed','failed')`, state, now, agentID)
+	_ = m.bus.Publish(context.Background(), bus.Event{
+		Type:    "agent_state",
+		AgentID: agentID,
+		Payload: shared.JSONRaw(map[string]any{"pane_id": p.ID, "state": state}),
+		TS:      now,
+	})
+}
+
+// armIdleTimer (re)starts the quiet-period timer that flips the pane to
+// idle when no output arrives for idleAfter.
+func (m *Manager) armIdleTimer(p *Pane, agentID string) {
+	after := m.idleAfter
+	if after <= 0 {
+		after = defaultIdleAfter
+	}
+	p.mu.Lock()
+	if p.stateTimer != nil {
+		p.stateTimer.Stop()
+	}
+	p.stateTimer = time.AfterFunc(after, func() { m.markState(p, agentID, "idle") })
+	p.mu.Unlock()
 }
 
 func (m *Manager) persistChunk(p *Pane, chunk []byte) error {
@@ -354,4 +479,7 @@ const (
 	// defaultInitialInputDelay gives an interactive worker CLI time to
 	// bring up its input loop before we type the task prompt into it.
 	defaultInitialInputDelay = 500 * time.Millisecond
+	// defaultIdleAfter is the quiet period after which a pane with no
+	// output is considered idle (V1 heuristic).
+	defaultIdleAfter = 2 * time.Second
 )

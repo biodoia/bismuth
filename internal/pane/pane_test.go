@@ -101,6 +101,7 @@ func TestSpawnWiresPaneIDWorkdirEnvAndInput(t *testing.T) {
 		Cmd:          []string{"sh", "-c", script},
 		Env:          []string{"BISMUTH_TASK_ID=tsk-xyz"},
 		InitialInput: []byte("do-the-thing"),
+		MCPConfig:    []byte(`{"mcpServers":{"bismuth-team":{"command":"bismuth","args":["mcp"]}}}`),
 	}
 	p, err := m.Spawn(ctx, spec)
 	if err != nil {
@@ -127,6 +128,13 @@ func TestSpawnWiresPaneIDWorkdirEnvAndInput(t *testing.T) {
 		t.Errorf("worker did not run in the requested workdir %q: %v", dir, err)
 	}
 
+	// MCP installer: .mcp.json must be in place before the worker runs.
+	if got, err := os.ReadFile(filepath.Join(dir, ".mcp.json")); err != nil {
+		t.Errorf(".mcp.json not written to workdir: %v", err)
+	} else if !strings.Contains(string(got), "bismuth-team") {
+		t.Errorf(".mcp.json content unexpected: %s", got)
+	}
+
 	// The panes row must use the same id as the agent's pane_id.
 	row, err := store.GetPane(ctx, "pane-fixed-123")
 	if err != nil {
@@ -135,6 +143,84 @@ func TestSpawnWiresPaneIDWorkdirEnvAndInput(t *testing.T) {
 	if row.ID != "pane-fixed-123" {
 		t.Fatalf("panes row id = %q, want pane-fixed-123", row.ID)
 	}
+}
+
+func TestLastLines(t *testing.T) {
+	cases := []struct {
+		in   string
+		n    int
+		want string
+	}{
+		{"", 5, ""},
+		{"a\nb\nc", 0, "a\nb\nc"},           // n<=0 -> everything
+		{"a\nb\nc", 2, "b\nc"},              // plain split
+		{"a\nb\nc\n", 2, "b\nc\n"},          // trailing newline ignored for counting
+		{"a\nb\nc", 10, "a\nb\nc"},          // n larger than content
+		{"x", 1, "x"},                       // single line, no newline
+		{"\x1b[31mred\x1b[0m\nok", 1, "ok"}, // ANSI codes stay within their line
+	}
+	for _, c := range cases {
+		if got := string(LastLines([]byte(c.in), c.n)); got != c.want {
+			t.Errorf("LastLines(%q, %d) = %q, want %q", c.in, c.n, got, c.want)
+		}
+	}
+}
+
+// TestStateTransitions verifies the V1 heuristic: output flips the pane
+// to working, a quiet period flips it to idle, and process exit marks it
+// exited — all persisted to the panes row.
+func TestStateTransitions(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not available")
+	}
+	ctx := context.Background()
+
+	store, err := db.Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	b := bus.New(store.DB())
+	defer b.Close()
+
+	m := NewManager(store.DB(), b, config.PaneCfg{})
+	m.initialInputDelay = 0
+	m.idleAfter = 50 * time.Millisecond
+
+	// Emit output, stay quiet long enough to go idle, then exit.
+	p, err := m.Spawn(ctx, SpawnSpec{
+		AgentID: "agt-state",
+		PaneID:  "pane-state-1",
+		CLI:     "sh",
+		Role:    "tester",
+		Workdir: t.TempDir(),
+		Cmd:     []string{"sh", "-c", "echo busy; sleep 0.4; echo done"},
+	})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	defer func() { _ = m.Kill(ctx, p.ID) }()
+
+	if !waitForPaneState(t, store, p.ID, "idle", 3*time.Second) {
+		t.Fatalf("pane never went idle; last persisted state mismatch")
+	}
+	if !waitForPaneState(t, store, p.ID, "exited", 5*time.Second) {
+		t.Fatalf("pane never marked exited after process end")
+	}
+}
+
+// waitForPaneState polls the panes row until last_state equals want.
+func waitForPaneState(t *testing.T, store *db.Store, paneID, want string, timeout time.Duration) bool {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		row, err := store.GetPane(context.Background(), paneID)
+		if err == nil && row.LastState.Valid && row.LastState.String == want {
+			return true
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return false
 }
 
 // waitForScrollback polls the in-memory scrollback until it contains needle
