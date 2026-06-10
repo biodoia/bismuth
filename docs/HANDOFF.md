@@ -63,6 +63,39 @@
 - Layout 4-zone desktop: agents|terminal|voice|feed
 - Mobile: tabs con agents come default
 
+## Sessione spawn-fix (PR #3) — DONE
+
+Lo spawn degli agenti creava il record ma il worker non lavorava mai
+(scrollback sempre vuoto). Quattro root cause corrette in `internal/pane`
++ `internal/api`:
+
+1. pane-id disallineato: l'API salvava un pane_id sull'agente ma Spawn ne
+   generava un altro → /read /send /kill non trovavano mai il pane
+2. env azzerato: il worker partiva senza PATH/HOME (ora os.Environ + overlay)
+3. worktree ignorata: il worker girava in cfg.Workdir, non nella worktree
+4. task mai consegnato: ora scritto nella PTY come primo input (+Enter)
+
+Più hardening emerso da CI/review: data race in persistChunk (snapshot
+sotto lock), PTY chiusa se exec fallisce, context.Background() per lo
+stato terminale, spawn fallito → 500 + agente `failed`.
+
+Web CI (rosso da bf4c691) riparato: ERESOLVE su vite 8 (plugin-react ^6,
+vite-plugin-pwa ^1.3) + Tailwind 4 mai cablato (aggiunto @tailwindcss/vite
+in vite.config.ts — prima la dashboard usciva SENZA stili).
+
+V1 completata (i TODO "sessione+1" di pane.go):
+- MCP installer: `.mcp.json` scritto nella workdir prima dello spawn
+  (bismuth-team → questo binario `mcp`, stesso DB via BISMUTH_MCP_DB)
+- Read ultime-N-righe (`pane.LastLines`, split su \n, ANSI intatte) +
+  `?n=` rispettato in /read
+- Stati agente: euristica V1 output→working, silenzio→idle (2s),
+  exit→exited (reap via c.Wait — il master PTY non vede mai EOF);
+  persistiti su panes+agents, evento `agent_state` sul bus
+- P7-g RBAC enforcement: viewer → 403 su spawn/send/kill (user nil =
+  CLI localhost → permesso, V1)
+- Test ermetici: repoRoot dei test API in t.TempDir() — prima ogni run
+  registrava worktree + branch `bismuth/tsk-*` NEL REPO REALE
+
 ## P7 backlog (prossima sessione)
 
 | # | Item | Note |
@@ -73,7 +106,7 @@
 | P7-d | Telegram/Discord bridge | Bot per notifiche + comando remoto |
 | P7-e | Multi-tenant | Namespace isolation, per-team DB |
 | P7-f | Web code-splitting | Dynamic import, ridurre chunk size |
-| P7-g | User-based RBAC enforcement | enforce CanSpawn/CanKill negli handler |
+| P7-g | ~~User-based RBAC enforcement~~ | DONE in PR #3 |
 | P7-h | Audit trail UI | Visualizzare audit log nel web |
 | P7-i | Task drag-drop assignment | Assegnare task ad agenti via drag |
 | P7-j | Streaming agent output | SSE per agent output in real-time |

@@ -2,29 +2,29 @@
 //
 // Routes (V1):
 //
-//   GET  /healthz                                  -- liveness
+//	GET  /healthz                                  -- liveness
 //
-//   GET  /api/v1/agents                            -- list agents
-//   POST /api/v1/agents                            -- spawn agent { role, cli, task, args }
-//   GET  /api/v1/agents/:id                        -- agent detail
-//   POST /api/v1/agents/:id/send                   -- send bytes { data_b64 }
-//   GET  /api/v1/agents/:id/read                   -- read last N lines ?n=200
-//   POST /api/v1/agents/:id/kill                   -- terminate
+//	GET  /api/v1/agents                            -- list agents
+//	POST /api/v1/agents                            -- spawn agent { role, cli, task, args }
+//	GET  /api/v1/agents/:id                        -- agent detail
+//	POST /api/v1/agents/:id/send                   -- send bytes { data_b64 }
+//	GET  /api/v1/agents/:id/read                   -- read last N lines ?n=200
+//	POST /api/v1/agents/:id/kill                   -- terminate
 //
-//   GET  /api/v1/tasks                             -- list tasks
-//   POST /api/v1/tasks                             -- create task { title, description, priority, parent_id }
-//   GET  /api/v1/tasks/:id                         -- task detail
-//   POST /api/v1/tasks/:id/assign                  -- assign { agent_id }
-//   POST /api/v1/tasks/:id/merge                   -- merge branch
+//	GET  /api/v1/tasks                             -- list tasks
+//	POST /api/v1/tasks                             -- create task { title, description, priority, parent_id }
+//	GET  /api/v1/tasks/:id                         -- task detail
+//	POST /api/v1/tasks/:id/assign                  -- assign { agent_id }
+//	POST /api/v1/tasks/:id/merge                   -- merge branch
 //
-//   GET  /api/v1/roles                             -- role catalog
-//   GET  /api/v1/events                            -- recent events ?types=&agent_id=&limit=
+//	GET  /api/v1/roles                             -- role catalog
+//	GET  /api/v1/events                            -- recent events ?types=&agent_id=&limit=
 //
-//   GET  /api/v1/ws                                -- WebSocket subscribe ?types=&agent_id=
+//	GET  /api/v1/ws                                -- WebSocket subscribe ?types=&agent_id=
 //
-//   POST /v1/voice/stt                             -- multipart audio -> { text }
-//   POST /v1/voice/speak                           -- { text } -> { audio_b64, format }
-//   POST /v1/voice/command                         -- { text } -> { action, args, text_response }
+//	POST /v1/voice/stt                             -- multipart audio -> { text }
+//	POST /v1/voice/speak                           -- { text } -> { audio_b64, format }
+//	POST /v1/voice/command                         -- { text } -> { action, args, text_response }
 package api
 
 import (
@@ -39,7 +39,9 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -331,6 +333,14 @@ type spawnReq struct {
 }
 
 func (s *Server) spawnAgent(w http.ResponseWriter, r *http.Request) {
+	// RBAC (P7-g): authenticated users need spawn rights. Requests with
+	// no user (localhost CLI, no Tailscale headers) pass — the network
+	// gate in authMiddleware is the V1 boundary for those.
+	if u := security.UserFromContext(r.Context()); u != nil && !u.CanSpawn() {
+		_ = s.audit.Append(r.Context(), "user:"+u.Email, "denied_spawn", "", nil)
+		writeErr(w, 403, errors.New("role "+u.Role+" cannot spawn agents"))
+		return
+	}
 	var req spawnReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, 400, err)
@@ -360,12 +370,12 @@ func (s *Server) spawnAgent(w http.ResponseWriter, r *http.Request) {
 	// persist task first (so agent can reference it)
 	if req.Task != "" {
 		_ = s.store.InsertTask(r.Context(), &db.Task{
-			ID:          taskID,
-			Title:       firstLine(req.Task),
-			Description: sql.NullString{String: req.Task, Valid: true},
-			Status:      "open",
-			Priority:    0,
-			Branch:      sql.NullString{String: branch, Valid: branch != ""},
+			ID:           taskID,
+			Title:        firstLine(req.Task),
+			Description:  sql.NullString{String: req.Task, Valid: true},
+			Status:       "open",
+			Priority:     0,
+			Branch:       sql.NullString{String: branch, Valid: branch != ""},
 			WorktreePath: sql.NullString{String: wtPath, Valid: wtPath != ""},
 		})
 	}
@@ -406,8 +416,9 @@ func (s *Server) spawnAgent(w http.ResponseWriter, r *http.Request) {
 		envVars = append(envVars, providerEnv...)
 	}
 	// PaneID must match the id stored on the agent so /read, /send and
-	// /kill resolve the same pane. The worker runs in its worktree and
-	// receives the task as its first prompt.
+	// /kill resolve the same pane. The worker runs in its worktree,
+	// receives the task as its first prompt, and gets the bismuth-team
+	// MCP server installed via .mcp.json.
 	if _, err := s.pane.Spawn(r.Context(), pane.SpawnSpec{
 		AgentID:      agentID,
 		PaneID:       paneID,
@@ -417,6 +428,7 @@ func (s *Server) spawnAgent(w http.ResponseWriter, r *http.Request) {
 		Cmd:          cmd,
 		Env:          envVars,
 		InitialInput: []byte(req.Task),
+		MCPConfig:    s.mcpConfigJSON(agentID),
 	}); err != nil {
 		logger.Error("spawn worker failed", "agent_id", agentID, "cli", req.CLI, "err", err)
 		// Use a fresh context: if the spawn failed because the request was
@@ -458,6 +470,12 @@ type sendReq struct {
 
 func (s *Server) sendToAgent(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
+	// Driving a worker's stdin is an operator action, same as spawning.
+	if u := security.UserFromContext(r.Context()); u != nil && !u.CanSpawn() {
+		_ = s.audit.Append(r.Context(), "user:"+u.Email, "denied_send", id, nil)
+		writeErr(w, 403, errors.New("role "+u.Role+" cannot send to agents"))
+		return
+	}
 	var req sendReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, 400, err)
@@ -503,6 +521,12 @@ func (s *Server) readAgent(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, err)
 		return
 	}
+	n := 200
+	if q := r.URL.Query().Get("n"); q != "" {
+		if v, err := strconv.Atoi(q); err == nil {
+			n = v
+		}
+	}
 	// try persisted scrollback first
 	if a.PaneID.Valid {
 		p, err := s.store.GetPane(r.Context(), a.PaneID.String)
@@ -510,7 +534,7 @@ func (s *Server) readAgent(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, 200, map[string]any{
 				"agent_id":   id,
 				"pane_id":    a.PaneID.String,
-				"scrollback": p.Scrollback.String,
+				"scrollback": string(pane.LastLines([]byte(p.Scrollback.String), n)),
 				"last_state": p.LastState.String,
 			})
 			return
@@ -527,6 +551,11 @@ func (s *Server) readAgent(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) killAgent(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
+	if u := security.UserFromContext(r.Context()); u != nil && !u.CanKill() {
+		_ = s.audit.Append(r.Context(), "user:"+u.Email, "denied_kill", id, nil)
+		writeErr(w, 403, errors.New("role "+u.Role+" cannot kill agents"))
+		return
+	}
 	a, err := s.store.GetAgent(r.Context(), id)
 	if err != nil {
 		writeErr(w, 404, err)
@@ -864,6 +893,36 @@ func (s *Server) findRole(id string) (roles.Role, bool) {
 		}
 	}
 	return roles.Role{}, false
+}
+
+// mcpConfigJSON builds the .mcp.json dropped into each worker's workdir
+// so the worker CLI picks up the bismuth-team MCP server (this binary's
+// `mcp` subcommand) backed by the same SQLite database.
+func (s *Server) mcpConfigJSON(agentID string) []byte {
+	exe, err := os.Executable()
+	if err != nil {
+		exe = "bismuth"
+	}
+	dbPath := s.cfg.DB.Path
+	if abs, err := filepath.Abs(dbPath); err == nil {
+		dbPath = abs
+	}
+	b, err := json.Marshal(map[string]any{
+		"mcpServers": map[string]any{
+			"bismuth-team": map[string]any{
+				"command": exe,
+				"args":    []string{"mcp"},
+				"env": map[string]string{
+					"BISMUTH_MCP_DB":   dbPath,
+					"BISMUTH_AGENT_ID": agentID,
+				},
+			},
+		},
+	})
+	if err != nil {
+		return nil
+	}
+	return b
 }
 
 func newID(prefix string) string {
