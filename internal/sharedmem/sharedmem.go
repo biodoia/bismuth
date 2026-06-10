@@ -101,6 +101,10 @@ type Memory struct {
 	Tags      string `json:"tags"`
 	CreatedAt string `json:"created_at"`
 	UpdatedAt string `json:"updated_at"`
+	// Source identifies the provider that produced this entry
+	// (SourceFTS5 for the local Store, SourceMem0 for Mem0).
+	// It is set in code only and is not persisted in the database.
+	Source string `json:"source"`
 }
 
 // Post creates or updates a memory entry.
@@ -113,6 +117,9 @@ func (s *Store) Post(ctx context.Context, m *Memory) error {
 		m.CreatedAt = now
 	}
 	m.UpdatedAt = now
+	if m.Source == "" {
+		m.Source = SourceFTS5
+	}
 
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO memories (id, agent_id, key, value, tags, created_at, updated_at)
@@ -146,7 +153,7 @@ func (s *Store) Query(ctx context.Context, query string, limit int) ([]*Memory, 
 
 	var results []*Memory
 	for rows.Next() {
-		m := &Memory{}
+		m := &Memory{Source: SourceFTS5}
 		if err := rows.Scan(&m.ID, &m.AgentID, &m.Key, &m.Value, &m.Tags, &m.CreatedAt, &m.UpdatedAt); err != nil {
 			return nil, err
 		}
@@ -172,7 +179,7 @@ func (s *Store) queryLike(ctx context.Context, query string, limit int) ([]*Memo
 
 	var results []*Memory
 	for rows.Next() {
-		m := &Memory{}
+		m := &Memory{Source: SourceFTS5}
 		if err := rows.Scan(&m.ID, &m.AgentID, &m.Key, &m.Value, &m.Tags, &m.CreatedAt, &m.UpdatedAt); err != nil {
 			return nil, err
 		}
@@ -200,7 +207,7 @@ func (s *Store) List(ctx context.Context, agentID string, limit int) ([]*Memory,
 
 	var results []*Memory
 	for rows.Next() {
-		m := &Memory{}
+		m := &Memory{Source: SourceFTS5}
 		if err := rows.Scan(&m.ID, &m.AgentID, &m.Key, &m.Value, &m.Tags, &m.CreatedAt, &m.UpdatedAt); err != nil {
 			return nil, err
 		}
@@ -244,7 +251,7 @@ func (s *Store) SearchByTag(ctx context.Context, tags []string, limit int) ([]*M
 
 	var results []*Memory
 	for rows.Next() {
-		m := &Memory{}
+		m := &Memory{Source: SourceFTS5}
 		if err := rows.Scan(&m.ID, &m.AgentID, &m.Key, &m.Value, &m.Tags, &m.CreatedAt, &m.UpdatedAt); err != nil {
 			return nil, err
 		}
