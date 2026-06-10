@@ -140,6 +140,7 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Pane, error) {
 	// layer the per-agent vars on top (later entries win).
 	c.Env = append(os.Environ(), spec.Env...)
 	if err := p.Start(c); err != nil {
+		_ = p.Close() // don't leak the PTY's file descriptors
 		return nil, fmt.Errorf("start %s: %w", spec.Cmd[0], err)
 	}
 
@@ -281,6 +282,7 @@ func (m *Manager) persistChunk(p *Pane, chunk []byte) error {
 	p.mu.Lock()
 	p.pending = append(p.pending, chunk...)
 	p.persistBytes += len(chunk)
+	curBytes := p.persistBytes
 	threshold := p.persistAfter
 	timer := p.persistTimer
 	every := p.persistEvery
@@ -309,7 +311,7 @@ func (m *Manager) persistChunk(p *Pane, chunk []byte) error {
 		_ = m.writeScrollback(p.ID, toFlush)
 	}
 
-	if p.persistBytes >= threshold {
+	if curBytes >= threshold {
 		flush()
 		return nil
 	}
