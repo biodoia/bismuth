@@ -1,80 +1,143 @@
-// App.tsx — 4-zone layout with header (V2).
-// Desktop: header + [agents | terminal | voice | feed].
-// Mobile (< 768px): header + vertical stack with tabs.
+// pages/App.tsx — 3-column grid layout: 240px sidebar | 1fr terminal | 300px feed.
+// Header 40px on top. No Voice tab on desktop. Mobile: vertical stack with tabs.
+// Wireframe v1 design system.
 
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
 import Header from "../components/Header";
 import Agents from "../components/Agents";
-import Voice from "../components/Voice";
 import Terminal from "../components/Terminal";
 import Feed from "../components/Feed";
+import type { Agent } from "../lib/types";
 
-type Tab = "agents" | "voice" | "terminal" | "feed";
+type Tab = "agents" | "terminal" | "feed";
 
 const TABS: { key: Tab; label: string }[] = [
   { key: "agents", label: "agents" },
-  { key: "voice", label: "voice" },
   { key: "terminal", label: "terminal" },
   { key: "feed", label: "feed" },
 ];
 
 export default function App() {
   const [tab, setTab] = useState<Tab>("agents");
+  const [selectedAgentId, setSelectedAgentId] = useState<string>("");
+  const [agents, setAgents] = useState<Agent[]>([]);
+
+  // Fetch agents for terminal tabs
+  const fetchAgents = useCallback(async () => {
+    try {
+      const r = await fetch("/api/v1/agents");
+      if (!r.ok) return;
+      const body = await r.json();
+      const list: Agent[] = body.agents || [];
+      setAgents(list);
+      // Auto-select first active agent if none selected
+      if (!selectedAgentId && list.length > 0) {
+        const active = list.find(
+          (a) => a.state === "working" || a.state === "idle"
+        );
+        if (active) setSelectedAgentId(active.id);
+      }
+    } catch {
+      /* ignore */
+    }
+  }, [selectedAgentId]);
+
+  useEffect(() => {
+    fetchAgents();
+    const id = setInterval(fetchAgents, 3000);
+    return () => clearInterval(id);
+  }, [fetchAgents]);
+
+  const handleSelectAgent = (id: string) => {
+    setSelectedAgentId(id);
+    // On mobile, switch to terminal tab when selecting an agent
+    if (window.innerWidth < 768) {
+      setTab("terminal");
+    }
+  };
 
   return (
-    <div className="flex flex-col h-full w-full bg-zinc-900 text-zinc-100">
+    <div className="flex flex-col h-full w-full" style={{ background: "#08090a", color: "#ededed" }}>
+      {/* Header 40px */}
       <Header />
-      <DesktopLayout />
-      <MobileLayout tab={tab} setTab={setTab} />
-    </div>
-  );
-}
 
-function DesktopLayout() {
-  return (
-    <div
-      className="hidden md:grid flex-1 min-h-0"
-      style={{ gridTemplateColumns: "260px 1fr 280px 320px", gap: "4px", padding: "4px" }}
-    >
-      <section className="panel p-2 min-h-0 flex flex-col" aria-label="agents">
-        <Agents />
-      </section>
-      <section className="panel p-2 min-h-0 flex flex-col" aria-label="terminal">
-        <Terminal />
-      </section>
-      <section className="panel p-2 min-h-0 flex flex-col" aria-label="voice">
-        <Voice />
-      </section>
-      <section className="panel p-2 min-h-0 flex flex-col" aria-label="feed">
-        <Feed />
-      </section>
-    </div>
-  );
-}
+      {/* Desktop: 3-column grid */}
+      <div
+        className="hidden md:grid flex-1 min-h-0"
+        style={{
+          gridTemplateColumns: "240px 1fr 300px",
+        }}
+      >
+        {/* Sidebar: Agents */}
+        <section
+          className="min-h-0 flex flex-col border-r"
+          style={{ borderColor: "rgba(255,255,255,0.06)" }}
+        >
+          <Agents
+            selectedAgentId={selectedAgentId}
+            onSelectAgent={handleSelectAgent}
+          />
+        </section>
 
-function MobileLayout({ tab, setTab }: { tab: Tab; setTab: (t: Tab) => void }) {
-  return (
-    <div className="flex flex-col flex-1 min-h-0 md:hidden">
-      <nav className="flex border-b border-zinc-800 text-xs">
-        {TABS.map((t) => (
-          <button
-            key={t.key}
-            onClick={() => setTab(t.key)}
-            className={
-              "flex-1 py-2 " +
-              (tab === t.key ? "bg-zinc-800 text-zinc-100" : "text-zinc-500")
-            }
-          >
-            {t.label}
-          </button>
-        ))}
-      </nav>
-      <main className="flex-1 min-h-0 p-2">
-        {tab === "agents" && <Agents />}
-        {tab === "voice" && <Voice />}
-        {tab === "terminal" && <Terminal />}
-        {tab === "feed" && <Feed />}
-      </main>
+        {/* Center: Terminal */}
+        <section
+          className="min-h-0 flex flex-col border-r"
+          style={{ borderColor: "rgba(255,255,255,0.06)" }}
+        >
+          <Terminal
+            selectedAgentId={selectedAgentId}
+            onSelectAgent={handleSelectAgent}
+            agents={agents}
+          />
+        </section>
+
+        {/* Right: Feed */}
+        <section className="min-h-0 flex flex-col">
+          <Feed />
+        </section>
+      </div>
+
+      {/* Mobile: tabs + single panel */}
+      <div className="flex flex-col flex-1 min-h-0 md:hidden">
+        {/* Mobile tab bar */}
+        <nav
+          className="flex shrink-0 border-b"
+          style={{ borderColor: "rgba(255,255,255,0.06)" }}
+        >
+          {TABS.map((t) => (
+            <button
+              key={t.key}
+              onClick={() => setTab(t.key)}
+              className="flex-1 py-2.5 text-xs font-medium transition-colors border-b-2"
+              style={{
+                borderColor: tab === t.key ? "#00D4AA" : "transparent",
+                color: tab === t.key ? "#ededed" : "#555",
+                background: tab === t.key ? "#161718" : "transparent",
+              }}
+            >
+              {t.label}
+            </button>
+          ))}
+        </nav>
+
+        {/* Mobile content */}
+        <main className="flex-1 min-h-0">
+          {tab === "agents" && (
+            <Agents
+              selectedAgentId={selectedAgentId}
+              onSelectAgent={handleSelectAgent}
+            />
+          )}
+          {tab === "terminal" && (
+            <Terminal
+              selectedAgentId={selectedAgentId}
+              onSelectAgent={handleSelectAgent}
+              agents={agents}
+            />
+          )}
+          {tab === "feed" && <Feed />}
+        </main>
+      </div>
     </div>
   );
 }

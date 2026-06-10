@@ -1,7 +1,5 @@
-// components/Agents.tsx — agent list with status badges and controls.
-//
-// Fetches /api/v1/agents on interval, shows cards with role/CLI/state,
-// spawn button, kill button. Status badges color-coded by state.
+// components/Agents.tsx — agent sidebar (240px) with spawn controls, clickable cards.
+// Wireframe v1 design system. Fetches /api/v1/agents, POST /api/v1/agents, POST kill.
 
 import { useState, useEffect, useCallback } from "react";
 
@@ -14,44 +12,93 @@ interface Agent {
   created_at: string;
 }
 
-const STATE_STYLE: Record<string, string> = {
-  running: "bg-emerald-500/20 text-emerald-400 border-emerald-500/40",
-  idle:    "bg-amber-500/20 text-amber-400 border-amber-500/40",
-  killed:  "bg-rose-500/20 text-rose-400 border-rose-500/40",
-  error:   "bg-red-500/20 text-red-400 border-red-500/40",
-  done:    "bg-sky-500/20 text-sky-400 border-sky-500/40",
+interface AgentsProps {
+  selectedAgentId: string | null;
+  onSelectAgent: (id: string) => void;
+}
+
+const STATE_DOT: Record<string, string> = {
+  working: "#22C55E",
+  idle: "#EAB308",
+  killed: "#EF4444",
+  done: "#3B82F6",
+  error: "#EF4444",
+  planning: "#22C55E",
+  reviewing: "#EAB308",
+  blocked: "#EF4444",
 };
 
-const ROLE_ICON: Record<string, string> = {
+const STATE_LABEL: Record<string, string> = {
+  working: "working",
+  idle: "idle",
+  killed: "killed",
+  done: "done",
+  error: "error",
+  planning: "planning",
+  reviewing: "reviewing",
+  blocked: "blocked",
+};
+
+const ROLE_ICONS: Record<string, string> = {
   implementer: "⌨",
-  reviewer:    "👁",
-  architect:   "🏗",
-  tester:      "🧪",
-  planner:     "📋",
+  reviewer: "👁",
+  architect: "🏗",
+  tester: "🧪",
+  planner: "📋",
   orchestrator: "🎼",
-  hermes:      "🕊",
-  researcher:  "🔍",
+  hermes: "🕊",
+  researcher: "🔍",
 };
 
-export default function Agents() {
+const ROLES = [
+  "implementer",
+  "reviewer",
+  "architect",
+  "tester",
+  "planner",
+  "orchestrator",
+  "hermes",
+  "researcher",
+];
+
+export default function Agents({ selectedAgentId, onSelectAgent }: AgentsProps) {
   const [agents, setAgents] = useState<Agent[]>([]);
+  const [roles, setRoles] = useState<string[]>(ROLES);
   const [spawning, setSpawning] = useState(false);
   const [spawnRole, setSpawnRole] = useState("implementer");
+  const [spawnTask, setSpawnTask] = useState("");
   const [error, setError] = useState("");
 
   const fetchAgents = useCallback(async () => {
     try {
       const r = await fetch("/api/v1/agents");
+      if (!r.ok) return;
       const body = await r.json();
       setAgents(body.agents || []);
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  const fetchRoles = useCallback(async () => {
+    try {
+      const r = await fetch("/api/v1/roles");
+      if (!r.ok) return;
+      const body = await r.json();
+      if (body.roles?.length) {
+        setRoles(body.roles.map((rl: { name: string }) => rl.name));
+      }
+    } catch {
+      /* fallback to defaults */
+    }
   }, []);
 
   useEffect(() => {
     fetchAgents();
+    fetchRoles();
     const id = setInterval(fetchAgents, 3000);
     return () => clearInterval(id);
-  }, [fetchAgents]);
+  }, [fetchAgents, fetchRoles]);
 
   const handleSpawn = async () => {
     setSpawning(true);
@@ -60,7 +107,11 @@ export default function Agents() {
       const r = await fetch("/api/v1/agents", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ role: spawnRole, cli: "bash", task: "awaiting instructions" }),
+        body: JSON.stringify({
+          role: spawnRole,
+          cli: "bash",
+          task: spawnTask || "awaiting instructions",
+        }),
       });
       if (!r.ok) {
         const b = await r.json();
@@ -68,109 +119,174 @@ export default function Agents() {
       } else {
         setTimeout(fetchAgents, 500);
       }
-    } catch (e: any) {
-      setError(e.message);
+    } catch (e: unknown) {
+      setError((e as Error)?.message || "spawn failed");
     } finally {
       setSpawning(false);
     }
   };
 
-  const handleKill = async (id: string) => {
+  const handleKill = async (e: React.MouseEvent, id: string) => {
+    e.stopPropagation();
     await fetch(`/api/v1/agents/${id}/kill`, { method: "POST" });
     setTimeout(fetchAgents, 500);
   };
 
-  const active = agents.filter((a) => a.state === "running" || a.state === "idle");
-  const done = agents.filter((a) => a.state !== "running" && a.state !== "idle");
+  const active = agents.filter(
+    (a) => a.state === "working" || a.state === "idle" || a.state === "planning" || a.state === "reviewing"
+  );
+  const completed = agents.filter(
+    (a) => !active.includes(a)
+  );
 
   return (
-    <div className="flex flex-col h-full gap-2">
-      <header className="flex items-center justify-between">
-        <h2 className="text-sm font-semibold">Agents</h2>
-        <span className="text-xs text-zinc-500">{active.length} attivi</span>
-      </header>
-
-      {/* spawn bar */}
-      <div className="flex gap-1.5">
-        <select
-          className="flex-1 bg-zinc-950 border border-zinc-800 rounded px-2 py-1 text-xs"
-          value={spawnRole}
-          onChange={(e) => setSpawnRole(e.target.value)}
-        >
-          {Object.keys(ROLE_ICON).map((r) => (
-            <option key={r} value={r}>{ROLE_ICON[r]} {r}</option>
-          ))}
-        </select>
-        <button
-          onClick={handleSpawn}
-          disabled={spawning}
-          className="bg-zinc-800 hover:bg-zinc-700 disabled:opacity-50 text-xs px-3 py-1 rounded border border-zinc-700"
-        >
-          {spawning ? "..." : "+ spawn"}
-        </button>
+    <div className="flex flex-col h-full">
+      {/* Section header */}
+      <div className="flex items-center justify-between px-3 py-2 border-b"
+        style={{ borderColor: "rgba(255,255,255,0.06)" }}
+      >
+        <h2 className="text-xs font-semibold text-[#ededed] uppercase tracking-wider">
+          Agents
+        </h2>
+        <span className="text-[10px] text-[#555]">
+          {active.length} active
+        </span>
       </div>
-      {error && <p className="text-xs text-rose-400">{error}</p>}
 
-      {/* active agents */}
-      <ul className="flex-1 overflow-y-auto space-y-1.5">
-        {active.length === 0 && (
-          <li className="text-xs text-zinc-600 py-4 text-center">— nessun agente attivo —</li>
-        )}
-        {active.map((a) => (
-          <li
-            key={a.id}
-            className="bg-zinc-950 border border-zinc-800 rounded p-2"
+      {/* Spawn bar */}
+      <div className="px-3 py-2 border-b space-y-1.5" style={{ borderColor: "rgba(255,255,255,0.06)" }}>
+        <div className="flex gap-1.5">
+          <select
+            className="spawn-select flex-1 text-xs px-2 py-1.5 rounded bg-[#161718] text-[#ededed] border hover:border-[rgba(255,255,255,0.10)] focus:border-[#00D4AA] outline-none transition-colors"
+            style={{ borderColor: "rgba(255,255,255,0.06)" }}
+            value={spawnRole}
+            onChange={(e) => setSpawnRole(e.target.value)}
           >
-            <div className="flex items-center justify-between gap-2">
-              <div className="flex items-center gap-2 min-w-0">
-                <span className="text-base">{ROLE_ICON[a.role] || "🤖"}</span>
-                <div className="min-w-0">
-                  <div className="text-xs font-mono truncate">{a.id.slice(0, 16)}</div>
-                  <div className="text-[10px] text-zinc-500">{a.role} · {a.cli}</div>
+            {roles.map((r) => (
+              <option key={r} value={r}>
+                {ROLE_ICONS[r] || "🤖"} {r}
+              </option>
+            ))}
+          </select>
+          <button
+            onClick={handleSpawn}
+            disabled={spawning}
+            className="spawn-btn text-xs px-3 py-1.5 rounded font-medium bg-[rgba(0,212,170,0.15)] text-[#00D4AA] border border-[rgba(0,212,170,0.25)] hover:bg-[rgba(0,212,170,0.25)] disabled:opacity-40 transition-colors"
+          >
+            {spawning ? "..." : "+ spawn"}
+          </button>
+        </div>
+        <input
+          className="w-full text-[10px] px-2 py-1 rounded bg-[#161718] text-[#888] border hover:border-[rgba(255,255,255,0.10)] focus:border-[#00D4AA] outline-none placeholder:text-[#555] transition-colors"
+          style={{ borderColor: "rgba(255,255,255,0.06)" }}
+          placeholder="task description (optional)"
+          value={spawnTask}
+          onChange={(e) => setSpawnTask(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") handleSpawn();
+          }}
+        />
+        {error && <p className="text-[10px] text-[#EF4444]">{error}</p>}
+      </div>
+
+      {/* Agent cards */}
+      <ul className="flex-1 overflow-y-auto p-2 space-y-1">
+        {active.length === 0 && (
+          <li className="text-[10px] text-[#555] py-8 text-center">
+            — no active agents —
+          </li>
+        )}
+        {active.map((a) => {
+          const isSelected = selectedAgentId === a.id;
+          const dotColor = STATE_DOT[a.state] || "#555";
+          return (
+            <li
+              key={a.id}
+              onClick={() => onSelectAgent(a.id)}
+              className="group rounded p-2 cursor-pointer transition-all border"
+              style={{
+                background: isSelected ? "#161718" : "#0f1011",
+                borderColor: isSelected
+                  ? "#00D4AA"
+                  : "rgba(255,255,255,0.06)",
+              }}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="text-sm">
+                    {ROLE_ICONS[a.role] || "🤖"}
+                  </span>
+                  <div className="min-w-0">
+                    <div
+                      className="text-[11px] font-mono truncate"
+                      style={{ fontFamily: "'JetBrains Mono', monospace" }}
+                    >
+                      {a.id.slice(0, 16)}
+                    </div>
+                    <div className="text-[10px] text-[#555]">
+                      {a.role} · {a.cli}
+                    </div>
+                  </div>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  {/* Status badge with dot-before */}
+                  <span className="flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-[#161718]">
+                    <span
+                      className="inline-block w-1.5 h-1.5 rounded-full"
+                      style={{ background: dotColor }}
+                    />
+                    <span style={{ color: dotColor }}>
+                      {STATE_LABEL[a.state] || a.state}
+                    </span>
+                  </span>
+                  {/* Kill button */}
+                  <button
+                    onClick={(e) => handleKill(e, a.id)}
+                    className="text-[10px] text-[#555] hover:text-[#EF4444] px-1 opacity-0 group-hover:opacity-100 transition-opacity"
+                    title="Kill agent"
+                  >
+                    ✕
+                  </button>
                 </div>
               </div>
-              <div className="flex items-center gap-1.5">
-                <span className={
-                  "text-[10px] px-1.5 py-0.5 rounded border " +
-                  (STATE_STYLE[a.state] || "bg-zinc-800 text-zinc-400 border-zinc-700")
-                }>
-                  {a.state}
-                </span>
-                <button
-                  onClick={() => handleKill(a.id)}
-                  className="text-[10px] text-rose-500 hover:text-rose-400 px-1"
-                  title="kill"
+              {a.task_id && (
+                <div
+                  className="text-[10px] text-[#555] mt-1 truncate"
+                  style={{ fontFamily: "'JetBrains Mono', monospace" }}
                 >
-                  ✕
-                </button>
-              </div>
-            </div>
-            {a.task_id && (
-              <div className="text-[10px] text-zinc-600 mt-1 font-mono truncate">
-                task: {a.task_id}
-              </div>
-            )}
-          </li>
-        ))}
+                  task: {a.task_id}
+                </div>
+              )}
+            </li>
+          );
+        })}
       </ul>
 
-      {/* completed agents (collapsed) */}
-      {done.length > 0 && (
-        <details className="text-xs">
-          <summary className="text-zinc-500 cursor-pointer">{done.length} completati</summary>
-          <ul className="mt-1 space-y-1">
-            {done.slice(0, 20).map((a) => (
-              <li key={a.id} className="text-zinc-600 font-mono text-[10px] flex gap-2">
-                <span className={
-                  "px-1 rounded " + (STATE_STYLE[a.state] || "")
-                }>
-                  {a.state}
-                </span>
-                <span className="truncate">{a.id.slice(0, 20)}</span>
-              </li>
-            ))}
-          </ul>
-        </details>
+      {/* Completed agents (collapsed) */}
+      {completed.length > 0 && (
+        <div className="border-t px-3 py-2" style={{ borderColor: "rgba(255,255,255,0.06)" }}>
+          <details className="text-xs">
+            <summary className="text-[#555] cursor-pointer hover:text-[#888] transition-colors">
+              {completed.length} completed
+            </summary>
+            <ul className="mt-1.5 space-y-0.5">
+              {completed.slice(0, 20).map((a) => (
+                <li
+                  key={a.id}
+                  className="flex items-center gap-2 text-[10px] text-[#555] cursor-pointer hover:text-[#888] transition-colors"
+                  style={{ fontFamily: "'JetBrains Mono', monospace" }}
+                >
+                  <span
+                    className="inline-block w-1.5 h-1.5 rounded-full shrink-0"
+                    style={{ background: STATE_DOT[a.state] || "#555" }}
+                  />
+                  <span className="truncate">{a.id.slice(0, 20)}</span>
+                  <span className="ml-auto text-[#555]">{a.role}</span>
+                </li>
+              ))}
+            </ul>
+          </details>
+        </div>
       )}
     </div>
   );
