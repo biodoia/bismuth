@@ -419,7 +419,9 @@ func (s *Server) spawnAgent(w http.ResponseWriter, r *http.Request) {
 		InitialInput: []byte(req.Task),
 	}); err != nil {
 		logger.Error("spawn worker failed", "agent_id", agentID, "cli", req.CLI, "err", err)
-		_ = s.store.UpdateAgentState(r.Context(), agentID, "failed")
+		// Use a fresh context: if the spawn failed because the request was
+		// cancelled, r.Context() is dead and the state update would be lost.
+		_ = s.store.UpdateAgentState(context.Background(), agentID, "failed")
 		writeErr(w, 500, fmt.Errorf("spawn worker: %w", err))
 		return
 	}

@@ -26,6 +26,7 @@ type testEnv struct {
 	srv    *Server
 	store  *db.Store
 	bus    *bus.Bus
+	pm     *pane.Manager
 	ts     *httptest.Server
 	cancel context.CancelFunc
 }
@@ -59,12 +60,13 @@ func newTestEnv(t *testing.T) *testEnv {
 
 	ts := httptest.NewServer(srv.Handler())
 
-	return &testEnv{srv: srv, store: store, bus: busServer, ts: ts, cancel: cancel}
+	return &testEnv{srv: srv, store: store, bus: busServer, pm: pm, ts: ts, cancel: cancel}
 }
 
 func (e *testEnv) Close() {
 	e.cancel()
 	e.ts.Close()
+	e.pm.Close() // stop worker panes (and their readLoops) before the DB closes
 	e.store.Close()
 }
 
