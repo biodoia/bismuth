@@ -20,6 +20,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
 	"os/exec"
 	"sync"
 	"time"
@@ -32,9 +33,14 @@ import (
 
 // Manager owns all live panes.
 type Manager struct {
-	db   *sql.DB
-	bus  *bus.Bus
-	cfg  config.PaneCfg
+	db  *sql.DB
+	bus *bus.Bus
+	cfg config.PaneCfg
+
+	// initialInputDelay is how long to wait after a worker starts before
+	// typing its task/prompt, giving the CLI time to bring up its input
+	// loop. Set to 0 in tests for determinism.
+	initialInputDelay time.Duration
 
 	mu    sync.RWMutex
 	panes map[string]*Pane
@@ -70,10 +76,11 @@ type Pane struct {
 // NewManager creates a pane manager. It does not spawn anything yet.
 func NewManager(db *sql.DB, b *bus.Bus, cfg config.PaneCfg) *Manager {
 	return &Manager{
-		db:    db,
-		bus:   b,
-		cfg:   cfg,
-		panes: make(map[string]*Pane),
+		db:                db,
+		bus:               b,
+		cfg:               cfg,
+		panes:             make(map[string]*Pane),
+		initialInputDelay: defaultInitialInputDelay,
 	}
 }
 
@@ -87,36 +94,65 @@ func (m *Manager) Close() {
 	}
 }
 
-// Spawn starts a worker process and registers it. cmd[0] is the binary
-// (e.g. "omx"), cmd[1:] are the arguments.
+// SpawnSpec describes a worker process to launch.
+type SpawnSpec struct {
+	AgentID string
+	// PaneID must match the pane_id stored on the agent so that /read,
+	// /send and /kill resolve the same pane. Generated if empty.
+	PaneID string
+	CLI    string
+	Role   string
+	// Workdir is where the worker runs — normally the agent's git
+	// worktree. Falls back to the manager's configured workdir if empty.
+	Workdir string
+	// Cmd[0] is the binary (e.g. "omx"), Cmd[1:] are the arguments.
+	Cmd []string
+	// Env holds per-agent vars (BISMUTH_*, provider API keys). They are
+	// layered on top of the inherited process environment, not replacing it.
+	Env []string
+	// InitialInput is the task/prompt delivered to the worker's stdin once
+	// it starts, as if a human typed it and pressed Enter.
+	InitialInput []byte
+}
+
+// Spawn starts a worker process and registers it.
 //
 // TODO(sessione+1): wire to MCP installer (write .mcp.json in workdir
-// before spawn), set up worktree, push state events.
-func (m *Manager) Spawn(ctx context.Context, agentID, cli string, role string, cmd []string, env []string) (*Pane, error) {
-	if len(cmd) == 0 {
+// before spawn), push state events.
+func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Pane, error) {
+	if len(spec.Cmd) == 0 {
 		return nil, fmt.Errorf("cmd must not be empty")
+	}
+
+	workdir := spec.Workdir
+	if workdir == "" {
+		workdir = m.cfg.Workdir
 	}
 
 	p, err := xpty.NewPty(120, 40)
 	if err != nil {
 		return nil, fmt.Errorf("new pty: %w", err)
 	}
-	args := cmd[1:]
-	c := exec.Command(cmd[0], args...)
-	c.Dir = m.cfg.Workdir
-	if env != nil {
-		c.Env = append(c.Env, env...)
-	}
+	c := exec.Command(spec.Cmd[0], spec.Cmd[1:]...)
+	c.Dir = workdir
+	// Inherit the server's environment (PATH, HOME, ...) so the worker CLI
+	// and any subprocess it launches can resolve binaries and config; then
+	// layer the per-agent vars on top (later entries win).
+	c.Env = append(os.Environ(), spec.Env...)
 	if err := p.Start(c); err != nil {
-		return nil, fmt.Errorf("start %s: %w", cmd[0], err)
+		return nil, fmt.Errorf("start %s: %w", spec.Cmd[0], err)
 	}
 
+	paneID := spec.PaneID
+	if paneID == "" {
+		paneID = newPaneID()
+	}
 	pane := &Pane{
-		ID:        newPaneID(),
-		AgentID:   agentID,
-		Shell:     cmd[0],
-		Cmd:       cmd,
-		Workdir:   m.cfg.Workdir,
+		ID:        paneID,
+		AgentID:   spec.AgentID,
+		Shell:     spec.Cmd[0],
+		Cmd:       spec.Cmd,
+		Workdir:   workdir,
 		Started:   time.Now(),
 		PTY:       p,
 		scrollMax: 5000,
@@ -127,19 +163,36 @@ func (m *Manager) Spawn(ctx context.Context, agentID, cli string, role string, c
 	m.panes[pane.ID] = pane
 	m.mu.Unlock()
 
-	go m.readLoop(pane, agentID)
+	go m.readLoop(pane, spec.AgentID)
+
+	// Deliver the task as the worker's first input.
+	if len(spec.InitialInput) > 0 {
+		go m.deliverInitialInput(pane, spec.InitialInput)
+	}
 
 	// Persist + publish
 	_, _ = m.db.ExecContext(ctx,
 		`INSERT INTO panes(id, agent_id, last_state, last_state_at) VALUES(?,?,?,?)`,
-		pane.ID, agentID, pane.lastState, time.Now().UTC().Format(time.RFC3339))
+		pane.ID, spec.AgentID, pane.lastState, time.Now().UTC().Format(time.RFC3339))
 	_ = m.bus.Publish(ctx, bus.Event{
 		Type:    "pane_spawned",
-		AgentID: agentID,
-		Payload: shared.JSONRaw(map[string]any{"pane_id": pane.ID, "cli": cli, "role": role, "cmd": cmd}),
+		AgentID: spec.AgentID,
+		Payload: shared.JSONRaw(map[string]any{"pane_id": pane.ID, "cli": spec.CLI, "role": spec.Role, "cmd": spec.Cmd}),
 		TS:      time.Now().UTC().Format(time.RFC3339),
 	})
 	return pane, nil
+}
+
+// deliverInitialInput types the task/prompt into the worker's PTY once it
+// has had a moment to start its input loop, then sends Enter (CR).
+func (m *Manager) deliverInitialInput(p *Pane, input []byte) {
+	if m.initialInputDelay > 0 {
+		time.Sleep(m.initialInputDelay)
+	}
+	payload := make([]byte, 0, len(input)+1)
+	payload = append(payload, input...)
+	payload = append(payload, '\r')
+	_, _ = p.PTY.Write(payload)
 }
 
 // Send writes bytes to the pane's PTY stdin.
@@ -294,6 +347,9 @@ func newPaneID() string {
 }
 
 const (
-	defaultPersistAfter = 256        // bytes
+	defaultPersistAfter = 256 // bytes
 	defaultPersistEvery = 500 * time.Millisecond
+	// defaultInitialInputDelay gives an interactive worker CLI time to
+	// bring up its input loop before we type the task prompt into it.
+	defaultInitialInputDelay = 500 * time.Millisecond
 )
