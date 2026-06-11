@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -161,16 +162,19 @@ func (p *Mem0) Query(ctx context.Context, q string, limit int) ([]*Memory, error
 }
 
 // List returns memories for one agent via GET /v1/memories/?user_id=...
-// The Mem0 list endpoint has no portable limit parameter, so the limit
-// is applied client-side.
+// A limit param is sent as a hint (harmless where unsupported) and the
+// limit is still enforced client-side; the response body is byte-capped
+// in decodeMem0Items so a huge result set cannot exhaust memory.
 func (p *Mem0) List(ctx context.Context, agentID string, limit int) ([]*Memory, error) {
 	if limit <= 0 {
 		limit = 50
 	}
-	path := "/v1/memories/"
+	q := url.Values{}
 	if agentID != "" {
-		path += "?user_id=" + url.QueryEscape(agentID)
+		q.Set("user_id", agentID)
 	}
+	q.Set("limit", strconv.Itoa(limit))
+	path := "/v1/memories/?" + q.Encode()
 	resp, err := p.do(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return nil, err
@@ -224,11 +228,15 @@ func mem0Status(resp *http.Response) error {
 	return fmt.Errorf("unexpected status %s: %s", resp.Status, strings.TrimSpace(string(snippet)))
 }
 
+// mem0MaxBody caps how much of a Mem0 response we are willing to read:
+// a misbehaving or huge result set must not exhaust bismuth's memory.
+const mem0MaxBody = 8 << 20 // 8 MiB
+
 // decodeMem0Items accepts the response shapes used across Mem0 versions:
 // a bare JSON array of items, or an object wrapping the array under
 // "results" (search, v1.1 outputs) or "memories".
 func decodeMem0Items(r io.Reader) ([]mem0Item, error) {
-	data, err := io.ReadAll(r)
+	data, err := io.ReadAll(io.LimitReader(r, mem0MaxBody))
 	if err != nil {
 		return nil, err
 	}

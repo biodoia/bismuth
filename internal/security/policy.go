@@ -2,16 +2,16 @@
 //
 // Maps to OWASP ASI01-10 (https://genai.owasp.org/resource/owasp-top-10-for-agentic-applications-for-2026/):
 //
-//   ASI01 Agent Goal Hijack       -> input sanitization
-//   ASI02 Tool Misuse             -> command allowlist + risk scoring
-//   ASI03 Identity/Privilege      -> per-agent scoped permissions
-//   ASI04 Supply Chain            -> pinned versions, signed MCP
-//   ASI05 Unexpected Code Exec    -> dry-run + confirm for destructive ops
-//   ASI06 Memory Poisoning        -> Cognee write/read scope + provenance
-//   ASI07 Inter-Agent Comms       -> signed messages, non-replayable nonce
-//   ASI08 Cascading Failures      -> independent verification per worker
-//   ASI09 Human-Agent Trust       -> always show diff, never auto-merge
-//   ASI10 Rogue Agents            -> kill switch + audit log + alerts
+//	ASI01 Agent Goal Hijack       -> input sanitization
+//	ASI02 Tool Misuse             -> command allowlist + risk scoring
+//	ASI03 Identity/Privilege      -> per-agent scoped permissions
+//	ASI04 Supply Chain            -> pinned versions, signed MCP
+//	ASI05 Unexpected Code Exec    -> dry-run + confirm for destructive ops
+//	ASI06 Memory Poisoning        -> Cognee write/read scope + provenance
+//	ASI07 Inter-Agent Comms       -> signed messages, non-replayable nonce
+//	ASI08 Cascading Failures      -> independent verification per worker
+//	ASI09 Human-Agent Trust       -> always show diff, never auto-merge
+//	ASI10 Rogue Agents            -> kill switch + audit log + alerts
 package security
 
 import (
@@ -28,9 +28,9 @@ const userKey contextKey = "bismuth_user"
 
 // User represents an authenticated user extracted from Tailscale headers.
 type User struct {
-	Email   string
-	Name    string
-	Role    string // admin, operator, viewer
+	Email     string
+	Name      string
+	Role      string // admin, operator, viewer
 	Tailscale bool
 }
 

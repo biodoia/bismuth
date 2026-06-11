@@ -15,16 +15,16 @@ package roles
 
 // Role is a named specialized agent configuration.
 type Role struct {
-	ID            string   `yaml:"id"`
-	Name          string   `yaml:"name"`
-	Description   string   `yaml:"description"`
-	CLIs          []string `yaml:"clis"`           // preferred worker CLI in order
-	DefaultModel  string   `yaml:"default_model"`  // e.g. "anthropic/claude-opus-4-7"
-	Effort        string   `yaml:"effort"`         // low | medium | high | max
-	MCPServers    []string `yaml:"mcp_servers"`    // to install
-	AllowedTools  []string `yaml:"allowed_tools"`  // tool allowlist
-	CostCeilingUSD float64 `yaml:"cost_ceiling_usd"`
-	PromptPath    string   `yaml:"prompt_path"`    // path under /prompts/
+	ID             string   `yaml:"id"`
+	Name           string   `yaml:"name"`
+	Description    string   `yaml:"description"`
+	CLIs           []string `yaml:"clis"`          // preferred worker CLI in order
+	DefaultModel   string   `yaml:"default_model"` // e.g. "anthropic/claude-opus-4-7"
+	Effort         string   `yaml:"effort"`        // low | medium | high | max
+	MCPServers     []string `yaml:"mcp_servers"`   // to install
+	AllowedTools   []string `yaml:"allowed_tools"` // tool allowlist
+	CostCeilingUSD float64  `yaml:"cost_ceiling_usd"`
+	PromptPath     string   `yaml:"prompt_path"` // path under /prompts/
 }
 
 // Catalog is the full set of roles.

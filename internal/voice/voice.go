@@ -2,15 +2,15 @@
 //
 // V1 approach (streaming HTTP, no LiveKit):
 //
-//   1. Browser PWA captures audio via MediaRecorder (16kHz PCM WebM).
-//   2. POST chunked to /v1/voice/stt on bismuth.
-//   3. bismuth forwards audio to 9router /v1/audio/transcriptions
-//      (provider: groq whisper-large-v3-turbo or deepgram nova-3).
-//   4. Resulting text is fed to a small command parser that maps to
-//      bismuth API calls (bismuth.spawn / bismuth.send / bismuth.status
-//      / bismuth.kill / bismuth.merge / open_app / change_role / ...).
-//   5. Response text is sent back to TTS via 9router /v1/audio/speech
-//      (provider: edge-tts or elevenlabs), streamed to the browser.
+//  1. Browser PWA captures audio via MediaRecorder (16kHz PCM WebM).
+//  2. POST chunked to /v1/voice/stt on bismuth.
+//  3. bismuth forwards audio to 9router /v1/audio/transcriptions
+//     (provider: groq whisper-large-v3-turbo or deepgram nova-3).
+//  4. Resulting text is fed to a small command parser that maps to
+//     bismuth API calls (bismuth.spawn / bismuth.send / bismuth.status
+//     / bismuth.kill / bismuth.merge / open_app / change_role / ...).
+//  5. Response text is sent back to TTS via 9router /v1/audio/speech
+//     (provider: edge-tts or elevenlabs), streamed to the browser.
 //
 // V2 will swap the HTTP path for a LiveKit room (real turn-taking,
 // interruption, VAD proper, barge-in).

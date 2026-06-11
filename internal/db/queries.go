@@ -151,22 +151,20 @@ func (s *Store) GetAgent(ctx context.Context, id string) (*Agent, error) {
 	return scanAgent(row)
 }
 
-// ListAgents filters by state and tenant; empty values mean "any".
+// ListAgents filters by state; an empty tenant means the "default"
+// namespace — list queries are always tenant-scoped (P7-e).
 func (s *Store) ListAgents(ctx context.Context, state, tenant string) ([]*Agent, error) {
 	q := agentSelect
-	var where []string
-	args := []any{}
+	if strings.TrimSpace(tenant) == "" {
+		tenant = "default"
+	}
+	where := []string{`tenant = ?`}
+	args := []any{tenant}
 	if state != "" {
 		where = append(where, `state = ?`)
 		args = append(args, state)
 	}
-	if tenant != "" {
-		where = append(where, `tenant = ?`)
-		args = append(args, tenant)
-	}
-	if len(where) > 0 {
-		q += ` WHERE ` + strings.Join(where, ` AND `)
-	}
+	q += ` WHERE ` + strings.Join(where, ` AND `)
 	q += ` ORDER BY created_at ASC`
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
@@ -333,22 +331,20 @@ func (s *Store) GetTask(ctx context.Context, id string) (*Task, error) {
 	return scanTask(row)
 }
 
-// ListTasks filters by status and tenant; empty values mean "any".
+// ListTasks filters by status; an empty tenant means the "default"
+// namespace — list queries are always tenant-scoped (P7-e).
 func (s *Store) ListTasks(ctx context.Context, status, tenant string) ([]*Task, error) {
 	q := taskSelect
-	var where []string
-	args := []any{}
+	if strings.TrimSpace(tenant) == "" {
+		tenant = "default"
+	}
+	where := []string{`tenant = ?`}
+	args := []any{tenant}
 	if status != "" {
 		where = append(where, `status = ?`)
 		args = append(args, status)
 	}
-	if tenant != "" {
-		where = append(where, `tenant = ?`)
-		args = append(args, tenant)
-	}
-	if len(where) > 0 {
-		q += ` WHERE ` + strings.Join(where, ` AND `)
-	}
+	q += ` WHERE ` + strings.Join(where, ` AND `)
 	q += ` ORDER BY priority DESC, created_at ASC`
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {

@@ -71,10 +71,16 @@ export default function Voice() {
       const wav = float32ToWav(audio, 16000);
       const blob = new Blob([wav], { type: "audio/wav" });
 
-      abortRef.current = new AbortController();
+      // Capture this utterance's controller locally: a new speech can
+      // abort + replace abortRef while our awaits are in flight, and a
+      // stale completion must not act on the fresher controller.
+      const cts = new AbortController();
+      abortRef.current = cts;
+      const signal = cts.signal;
 
       // 1. STT
-      const transcript = (await stt(blob)) || "";
+      const transcript = (await stt(blob, "it", signal)) || "";
+      if (signal.aborted) return;
       if (!transcript.trim()) {
         if (isContinuous) setHint(true);
         setStatus("idle");
@@ -82,7 +88,8 @@ export default function Voice() {
       }
 
       // 2. Command dispatch (wake-word gated when continuous).
-      const res = await voiceCommand(transcript, isContinuous, abortRef.current.signal);
+      const res = await voiceCommand(transcript, isContinuous, signal);
+      if (signal.aborted) return;
 
       // No wake word in continuous mode → subtle hint, no response.
       if (isContinuous && res.ignored) {

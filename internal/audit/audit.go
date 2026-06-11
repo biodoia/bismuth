@@ -86,8 +86,11 @@ type Entry struct {
 
 // Recent returns audit entries newest-first for the trail UI.
 func (l *Log) Recent(ctx context.Context, limit, offset int) ([]Entry, error) {
-	if limit <= 0 || limit > 500 {
+	if limit <= 0 {
 		limit = 100
+	}
+	if limit > 500 {
+		limit = 500 // matches the documented API maximum
 	}
 	if offset < 0 {
 		offset = 0
