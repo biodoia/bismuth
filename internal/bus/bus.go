@@ -2,10 +2,10 @@
 //
 // The bus has two roles:
 //
-//   1. IN-MEMORY FAN-OUT: any goroutine can call Publish(evt) and all
-//      subscribed WebSocket clients receive it in <1ms.
-//   2. PERSISTENT LOG: every published event is also appended to the
-//      `events` SQLite table, so a new client can replay history.
+//  1. IN-MEMORY FAN-OUT: any goroutine can call Publish(evt) and all
+//     subscribed WebSocket clients receive it in <1ms.
+//  2. PERSISTENT LOG: every published event is also appended to the
+//     `events` SQLite table, so a new client can replay history.
 //
 // Wire format: JSON, one event per WS message. Event types are stable
 // strings; payloads are JSON objects (opaque to the bus).
@@ -26,7 +26,7 @@ import (
 // Event is the canonical on-wire event shape.
 type Event struct {
 	Seq     int64           `json:"seq"`
-	Type    string          `json:"type"`    // agent_spawned, agent_state, ...
+	Type    string          `json:"type"` // agent_spawned, agent_state, ...
 	AgentID string          `json:"agent_id,omitempty"`
 	TaskID  string          `json:"task_id,omitempty"`
 	Payload json.RawMessage `json:"payload"` // opaque JSON

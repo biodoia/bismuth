@@ -141,7 +141,13 @@ func (b *Bridge) notifyLoop(ctx context.Context) {
 		if newMax <= lastSeen {
 			continue
 		}
-		for _, e := range b.pendingEvents(ctx, lastSeen, newMax) {
+		events, err := b.pendingEvents(ctx, lastSeen, newMax)
+		if err != nil {
+			// Transient DB error (e.g. locked): retry the same range on
+			// the next tick instead of skipping events forever.
+			continue
+		}
+		for _, e := range events {
 			if msg := formatEvent(e); msg != "" {
 				b.deliver(ctx, msg)
 			}
@@ -158,8 +164,9 @@ func (b *Bridge) maxSeq(ctx context.Context) int64 {
 }
 
 // pendingEvents returns the operator-relevant events with lo < seq <= hi
-// in insertion order. Best-effort: errors yield what was scanned so far.
-func (b *Bridge) pendingEvents(ctx context.Context, lo, hi int64) []event {
+// in insertion order. Any error means the caller must not advance its
+// high-water mark, so no event is silently skipped.
+func (b *Bridge) pendingEvents(ctx context.Context, lo, hi int64) ([]event, error) {
 	rows, err := b.db.QueryContext(ctx, `
 		SELECT seq, type, COALESCE(agent_id, ''), COALESCE(task_id, ''), payload, ts
 		FROM events
@@ -168,18 +175,21 @@ func (b *Bridge) pendingEvents(ctx context.Context, lo, hi int64) []event {
 		       OR (type = 'agent_state' AND payload LIKE '%exited%'))
 		ORDER BY seq ASC`, lo, hi)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	defer rows.Close()
 	var out []event
 	for rows.Next() {
 		var e event
 		if err := rows.Scan(&e.Seq, &e.Type, &e.AgentID, &e.TaskID, &e.Payload, &e.TS); err != nil {
-			return out
+			return nil, err
 		}
 		out = append(out, e)
 	}
-	return out
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // formatEvent renders one event as a short human notification. An empty

@@ -414,7 +414,7 @@ func TestTenantScoping(t *testing.T) {
 	env := newTestEnv(t)
 	defer env.Close()
 
-	postT := func(tenant string) {
+	postT := func(tenant string) string {
 		b, _ := json.Marshal(map[string]any{"role": "implementer", "cli": "bash", "task": "echo hi"})
 		req, _ := http.NewRequest("POST", env.ts.URL+"/api/v1/agents", bytes.NewReader(b))
 		req.Header.Set("Content-Type", "application/json")
@@ -423,10 +423,15 @@ func TestTenantScoping(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		raw, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if resp.StatusCode != 201 {
 			t.Fatalf("spawn under tenant %q: %d", tenant, resp.StatusCode)
 		}
+		var body map[string]any
+		_ = json.Unmarshal(raw, &body)
+		id, _ := body["agent_id"].(string)
+		return id
 	}
 	listT := func(tenant string) int {
 		req, _ := http.NewRequest("GET", env.ts.URL+"/api/v1/agents", nil)
@@ -445,7 +450,20 @@ func TestTenantScoping(t *testing.T) {
 		return len(agents)
 	}
 
-	postT("team-a")
+	getT := func(agentID, tenant string) int {
+		req, _ := http.NewRequest("GET", env.ts.URL+"/api/v1/agents/"+agentID, nil)
+		if tenant != "" {
+			req.Header.Set("X-Bismuth-Tenant", tenant)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	agentID := postT("team-a")
 	if n := listT("team-a"); n != 1 {
 		t.Errorf("team-a sees %d agents, want 1", n)
 	}
@@ -454,6 +472,17 @@ func TestTenantScoping(t *testing.T) {
 	}
 	if n := listT(""); n != 0 { // default namespace
 		t.Errorf("default tenant sees %d agents, want 0", n)
+	}
+
+	// Per-id isolation: a guessed id from another tenant must 404.
+	if code := getT(agentID, "team-a"); code != 200 {
+		t.Errorf("owner tenant get: %d, want 200", code)
+	}
+	if code := getT(agentID, "team-b"); code != 404 {
+		t.Errorf("cross-tenant get: %d, want 404", code)
+	}
+	if code := getT(agentID, ""); code != 404 { // default namespace
+		t.Errorf("default-tenant get of team-a agent: %d, want 404", code)
 	}
 }
 

@@ -61,10 +61,10 @@ func SetLevel(level string) {
 
 // Package-level convenience functions.
 
-func Debug(msg string, args ...any)  { L.Debug(msg, args...) }
-func Info(msg string, args ...any)   { L.Info(msg, args...) }
-func Warn(msg string, args ...any)   { L.Warn(msg, args...) }
-func Error(msg string, args ...any)  { L.Error(msg, args...) }
+func Debug(msg string, args ...any) { L.Debug(msg, args...) }
+func Info(msg string, args ...any)  { L.Info(msg, args...) }
+func Warn(msg string, args ...any)  { L.Warn(msg, args...) }
+func Error(msg string, args ...any) { L.Error(msg, args...) }
 
 // With returns a child logger with additional key-value pairs.
 func With(args ...any) *slog.Logger { return L.With(args...) }

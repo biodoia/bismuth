@@ -91,11 +91,23 @@ func (s *Store) migrate(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		if _, err := s.db.ExecContext(ctx, string(b)); err != nil {
+		// One transaction per migration: the DDL and its tracking row
+		// land together, so a crash can't leave the schema applied but
+		// unrecorded (re-running ALTER TABLE would fail forever).
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, string(b)); err != nil {
+			_ = tx.Rollback()
 			return fmt.Errorf("apply %s: %w", n, err)
 		}
-		if _, err := s.db.ExecContext(ctx,
+		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO schema_migrations(name) VALUES(?)`, n); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+		if err := tx.Commit(); err != nil {
 			return err
 		}
 	}

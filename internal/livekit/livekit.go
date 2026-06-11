@@ -77,8 +77,9 @@ type Manager struct {
 func NewManager(cfg Config) *Manager {
 	m := &Manager{cfg: cfg}
 	if cfg.Enabled() {
+		// Admin calls must never hang a handler goroutine on a dead SFU.
 		m.room = lkproto.NewRoomServiceJSONClient(
-			toHTTPURL(cfg.URL), &http.Client{}, xtwirp.DefaultClientOptions()...)
+			toHTTPURL(cfg.URL), &http.Client{Timeout: 15 * time.Second}, xtwirp.DefaultClientOptions()...)
 	}
 	return m
 }

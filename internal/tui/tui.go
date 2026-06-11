@@ -147,7 +147,7 @@ func (m model) View() string {
 		title, len(m.agents), len(m.events)))
 
 	agents := m.renderAgents(w * 2 / 5)
-	events := m.renderEvents(w*3/5 - 3, m.height-4)
+	events := m.renderEvents(w*3/5-3, m.height-4)
 
 	main := lipgloss.JoinHorizontal(lipgloss.Top, agents, " | ", events)
 

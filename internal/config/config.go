@@ -176,6 +176,7 @@ func (c *Config) applyDefaults() {
 	c.Bridge.TelegramToken = resolveEnv(c.Bridge.TelegramToken)
 	c.Bridge.TelegramChatID = resolveEnv(c.Bridge.TelegramChatID)
 	c.Bridge.DiscordWebhookURL = resolveEnv(c.Bridge.DiscordWebhookURL)
+	c.Bridge.APIBase = resolveEnv(c.Bridge.APIBase)
 	c.Memory.Mem0BaseURL = resolveEnv(c.Memory.Mem0BaseURL)
 	c.Memory.Mem0APIKey = resolveEnv(c.Memory.Mem0APIKey)
 	if c.Security.CostCeilingPerTaskUSD == 0 {

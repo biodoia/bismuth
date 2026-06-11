@@ -35,10 +35,10 @@ type modelRate struct {
 
 // DefaultRates are conservative estimates for common models.
 var DefaultRates = map[modelKey]modelRate{
-	{provider: "openai", model: "gpt-5.5"}:    {inPer1M: 15, outPer1M: 60},
-	{provider: "anthropic", model: "claude-opus-4"}: {inPer1M: 15, outPer1M: 75},
+	{provider: "openai", model: "gpt-5.5"}:            {inPer1M: 15, outPer1M: 60},
+	{provider: "anthropic", model: "claude-opus-4"}:   {inPer1M: 15, outPer1M: 75},
 	{provider: "anthropic", model: "claude-sonnet-4"}: {inPer1M: 3, outPer1M: 15},
-	{provider: "google", model: "gemini-3.5-flash"}: {inPer1M: 0.15, outPer1M: 0.60},
+	{provider: "google", model: "gemini-3.5-flash"}:   {inPer1M: 0.15, outPer1M: 0.60},
 }
 
 // NewGuard creates a guard with default pricing.

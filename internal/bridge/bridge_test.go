@@ -141,7 +141,7 @@ func openTestDB(t *testing.T, ctx context.Context) (*db.Store, func(typ, agentID
 	t.Cleanup(func() { _ = store.Close() })
 	insert := func(typ, agentID, taskID, payload string) {
 		t.Helper()
-		if _, err := store.DB().Exec(
+		if _, err := store.DB().ExecContext(ctx,
 			`INSERT INTO events(type, agent_id, task_id, payload, ts) VALUES(?,?,?,?,?)`,
 			typ, agentID, taskID, payload, "2026-06-10T00:00:00Z"); err != nil {
 			t.Fatal(err)

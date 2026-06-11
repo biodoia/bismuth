@@ -6,13 +6,13 @@
 //
 // Tools (V1):
 //
-//   team_status()                    -> { agent_id, role, state, task_id, peers[] }
-//   team_peers()                     -> [ { id, role, state, task_title } ]
-//   team_post(peer_id, body)         -> { message_id, delivered_at }
-//   team_read_inbox(limit)           -> [ messages ]
-//   team_claim(task_id)              -> { claimed: true }
-//   team_finish(task_id, summary)    -> { finished_at }
-//   shared_memory(query, k)          -> [ { source, snippet, score } ]   (V2: Cognee)
+//	team_status()                    -> { agent_id, role, state, task_id, peers[] }
+//	team_peers()                     -> [ { id, role, state, task_title } ]
+//	team_post(peer_id, body)         -> { message_id, delivered_at }
+//	team_read_inbox(limit)           -> [ messages ]
+//	team_claim(task_id)              -> { claimed: true }
+//	team_finish(task_id, summary)    -> { finished_at }
+//	shared_memory(query, k)          -> [ { source, snippet, score } ]   (V2: Cognee)
 package mcp
 
 import (
@@ -141,8 +141,8 @@ func toolList() []map[string]any {
 				"type": "object",
 				"properties": map[string]any{
 					"peer_id": map[string]any{"type": "string", "description": "Target agent id (or 'lead' for the orchestrator)"},
-					"body":   map[string]any{"type": "string"},
-					"kind":   map[string]any{"type": "string", "default": "text"},
+					"body":    map[string]any{"type": "string"},
+					"kind":    map[string]any{"type": "string", "default": "text"},
 				},
 				"required": []string{"peer_id", "body"},
 			},
@@ -151,7 +151,7 @@ func toolList() []map[string]any {
 			"name":        "team_read_inbox",
 			"description": "Read messages addressed to me. Newest first. Optional limit.",
 			"inputSchema": map[string]any{
-				"type":     "object",
+				"type":       "object",
 				"properties": map[string]any{"limit": map[string]any{"type": "integer", "default": 50}},
 			},
 		},
@@ -159,16 +159,16 @@ func toolList() []map[string]any {
 			"name":        "team_claim",
 			"description": "Claim a task from the bacheca. Marks it 'in_progress' and sets started_at.",
 			"inputSchema": map[string]any{
-				"type":     "object",
+				"type":       "object",
 				"properties": map[string]any{"task_id": map[string]any{"type": "string"}},
-				"required": []string{"task_id"},
+				"required":   []string{"task_id"},
 			},
 		},
 		{
 			"name":        "team_finish",
 			"description": "Mark my current task as done with a short summary.",
 			"inputSchema": map[string]any{
-				"type":     "object",
+				"type": "object",
 				"properties": map[string]any{
 					"task_id": map[string]any{"type": "string"},
 					"summary": map[string]any{"type": "string"},
@@ -181,7 +181,7 @@ func toolList() []map[string]any {
 			"name":        "shared_memory",
 			"description": "Query the shared memory for prior decisions, specs, design notes using FTS5 full-text search.",
 			"inputSchema": map[string]any{
-				"type":     "object",
+				"type": "object",
 				"properties": map[string]any{
 					"query": map[string]any{"type": "string", "description": "Full-text search query"},
 					"k":     map[string]any{"type": "integer", "default": 5},
@@ -193,7 +193,7 @@ func toolList() []map[string]any {
 			"name":        "memory_post",
 			"description": "Write a key-value memory entry to the shared memory. Tags are comma-separated.",
 			"inputSchema": map[string]any{
-				"type":     "object",
+				"type": "object",
 				"properties": map[string]any{
 					"key":   map[string]any{"type": "string", "description": "Memory key (e.g. 'architecture decision', 'bug fix pattern')"},
 					"value": map[string]any{"type": "string", "description": "Memory content"},
@@ -427,7 +427,7 @@ func (s *Server) toolClaim(ctx context.Context, id json.RawMessage, args json.Ra
 }
 
 type finishArgs struct {
-	TaskID string `json:"task_id"`
+	TaskID  string `json:"task_id"`
 	Summary string `json:"summary"`
 	Status  string `json:"status"`
 }

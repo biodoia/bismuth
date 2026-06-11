@@ -336,11 +336,37 @@ func writeErr(w http.ResponseWriter, code int, err error) {
 
 // tenantFrom resolves the request's namespace (P7-e). V1: an explicit
 // X-Bismuth-Tenant header, defaulting to the shared "default" namespace.
+// Values are normalized (lowercase) and validated; anything outside
+// [a-z0-9_-]{1,64} falls back to "default" rather than creating a
+// surprise namespace.
 func tenantFrom(r *http.Request) string {
-	if t := strings.TrimSpace(r.Header.Get("X-Bismuth-Tenant")); t != "" {
-		return t
+	t := strings.ToLower(strings.TrimSpace(r.Header.Get("X-Bismuth-Tenant")))
+	if t == "" || len(t) > 64 || !validTenant(t) {
+		return "default"
 	}
-	return "default"
+	return t
+}
+
+func validTenant(s string) bool {
+	for _, r := range s {
+		if !((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '_') {
+			return false
+		}
+	}
+	return true
+}
+
+// requireTenant enforces namespace isolation on per-id resources: a
+// resource that belongs to another tenant is reported as not found.
+func requireTenant(w http.ResponseWriter, r *http.Request, resourceTenant string) bool {
+	if resourceTenant == "" {
+		resourceTenant = "default"
+	}
+	if resourceTenant != tenantFrom(r) {
+		writeErr(w, 404, errors.New("not found"))
+		return false
+	}
+	return true
 }
 
 func (s *Server) listAgents(w http.ResponseWriter, r *http.Request) {
@@ -358,6 +384,9 @@ func (s *Server) getAgent(w http.ResponseWriter, r *http.Request) {
 	a, err := s.store.GetAgent(r.Context(), id)
 	if err != nil {
 		writeErr(w, 404, err)
+		return
+	}
+	if !requireTenant(w, r, a.Tenant) {
 		return
 	}
 	writeJSON(w, 200, a)
@@ -539,6 +568,9 @@ func (s *Server) sendToAgent(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, err)
 		return
 	}
+	if !requireTenant(w, r, a.Tenant) {
+		return
+	}
 	if !a.PaneID.Valid {
 		writeErr(w, 409, errors.New("agent has no pane"))
 		return
@@ -561,6 +593,9 @@ func (s *Server) readAgent(w http.ResponseWriter, r *http.Request) {
 	a, err := s.store.GetAgent(r.Context(), id)
 	if err != nil {
 		writeErr(w, 404, err)
+		return
+	}
+	if !requireTenant(w, r, a.Tenant) {
 		return
 	}
 	n := 200
@@ -603,6 +638,9 @@ func (s *Server) streamAgent(w http.ResponseWriter, r *http.Request) {
 	a, err := s.store.GetAgent(r.Context(), id)
 	if err != nil {
 		writeErr(w, 404, err)
+		return
+	}
+	if !requireTenant(w, r, a.Tenant) {
 		return
 	}
 	if !a.PaneID.Valid {
@@ -656,7 +694,9 @@ func (s *Server) streamAgent(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// listAudit exposes the tamper-evident audit trail (P7-h).
+// listAudit exposes the tamper-evident audit trail (P7-h). The trail is
+// intentionally global (admin surface), not tenant-scoped: it records
+// operator actions across namespaces; limits are clamped in Recent.
 func (s *Server) listAudit(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	limit, _ := strconv.Atoi(q.Get("limit"))
@@ -679,6 +719,9 @@ func (s *Server) killAgent(w http.ResponseWriter, r *http.Request) {
 	a, err := s.store.GetAgent(r.Context(), id)
 	if err != nil {
 		writeErr(w, 404, err)
+		return
+	}
+	if !requireTenant(w, r, a.Tenant) {
 		return
 	}
 	if a.PaneID.Valid {
@@ -713,6 +756,9 @@ func (s *Server) getTask(w http.ResponseWriter, r *http.Request) {
 	t, err := s.store.GetTask(r.Context(), id)
 	if err != nil {
 		writeErr(w, 404, err)
+		return
+	}
+	if !requireTenant(w, r, t.Tenant) {
 		return
 	}
 	writeJSON(w, 200, t)
@@ -762,6 +808,14 @@ func (s *Server) assignTask(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err)
 		return
 	}
+	t, err := s.store.GetTask(r.Context(), id)
+	if err != nil {
+		writeErr(w, 404, err)
+		return
+	}
+	if !requireTenant(w, r, t.Tenant) {
+		return
+	}
 	if err := s.store.AssignTask(r.Context(), id, req.AgentID); err != nil {
 		writeErr(w, 500, err)
 		return
@@ -780,6 +834,9 @@ func (s *Server) mergeTask(w http.ResponseWriter, r *http.Request) {
 	t, err := s.store.GetTask(r.Context(), id)
 	if err != nil {
 		writeErr(w, 404, err)
+		return
+	}
+	if !requireTenant(w, r, t.Tenant) {
 		return
 	}
 	if !t.Branch.Valid || t.Branch.String == "" {
@@ -984,18 +1041,20 @@ func (s *Server) voiceCommand(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err)
 		return
 	}
-	text := req.Text
+	text := strings.TrimSpace(req.Text)
 	if req.Continuous {
 		wake := strings.ToLower(strings.TrimSpace(s.cfg.Voice.WakeWord))
 		if wake == "" {
 			wake = "bismuth"
 		}
-		low := strings.ToLower(strings.TrimSpace(text))
-		if !strings.HasPrefix(low, wake) {
+		// Byte-safe prefix check on the already-trimmed text: EqualFold
+		// on the slice avoids any ToLower length drift, and a too-short
+		// utterance simply doesn't match.
+		if len(text) < len(wake) || !strings.EqualFold(text[:len(wake)], wake) {
 			writeJSON(w, 200, map[string]any{"heard": req.Text, "ignored": true})
 			return
 		}
-		text = strings.TrimLeft(strings.TrimSpace(text)[len(wake):], " ,.:;!?")
+		text = strings.TrimLeft(text[len(wake):], " ,.:;!?")
 	}
 	action, args := parseVoiceCommand(text)
 	resp := map[string]any{"heard": req.Text, "action": action, "args": args, "text_response": fmt.Sprintf("Ho capito: %s %v", action, args)}

@@ -75,11 +75,11 @@ export async function getAudit(limit = 100, offset = 0): Promise<{ entries: Audi
   return r.json();
 }
 
-export async function stt(audio: Blob, lang = "it"): Promise<string> {
+export async function stt(audio: Blob, lang = "it", signal?: AbortSignal): Promise<string> {
   const fd = new FormData();
   fd.append("file", audio, "audio.webm");
   fd.append("lang", lang);
-  const r = await fetch(`${base}/v1/voice/stt`, { method: "POST", body: fd });
+  const r = await fetch(`${base}/v1/voice/stt`, { method: "POST", body: fd, signal });
   if (!r.ok) throw new Error(`stt ${r.status}`);
   return (await r.json()).text;
 }

@@ -22,6 +22,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -165,7 +166,11 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}
 	if bcfg.Enabled() {
 		br := bridge.New(bcfg, sqlDB)
-		go func() { _ = br.Run(ctx) }()
+		go func() {
+			if err := br.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+				logger.Error("bridge stopped", "err", err)
+			}
+		}()
 		logger.Info("bridge enabled",
 			"telegram", bcfg.TelegramToken != "", "discord", bcfg.DiscordWebhookURL != "")
 	}
