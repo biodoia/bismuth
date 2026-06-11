@@ -96,20 +96,34 @@ V1 completata (i TODO "sessione+1" di pane.go):
 - Test ermetici: repoRoot dei test API in t.TempDir() — prima ogni run
   registrava worktree + branch `bismuth/tsk-*` NEL REPO REALE
 
-## P7 backlog (prossima sessione)
+## P7 — ALL DONE (sessione ultrawork, PR #4)
 
-| # | Item | Note |
-|---|------|------|
-| P7-a | LiveKit SDK reale | `go get github.com/livekit/server-sdk-go` |
-| P7-b | Wake-word detection | Porcupine/OpenWakeWord |
-| P7-c | Cognee/Mem0 memory | Graph+vector, sostituire FTS5 |
-| P7-d | Telegram/Discord bridge | Bot per notifiche + comando remoto |
-| P7-e | Multi-tenant | Namespace isolation, per-team DB |
-| P7-f | Web code-splitting | Dynamic import, ridurre chunk size |
-| P7-g | ~~User-based RBAC enforcement~~ | DONE in PR #3 |
-| P7-h | Audit trail UI | Visualizzare audit log nel web |
-| P7-i | Task drag-drop assignment | Assegnare task ad agenti via drag |
-| P7-j | Streaming agent output | SSE per agent output in real-time |
+| # | Item | Stato | Note |
+|---|------|-------|------|
+| P7-a | LiveKit reale | DONE | `internal/livekit`: JWT HS256 stdlib (claim identici a protocol/auth) + RoomService via client Twirp-JSON generato di `protocol/livekit` (stesso wire di lksdk). Config `livekit.{url,api_key,api_secret}` con ${VAR}; senza config → stub V1 |
+| P7-b | Wake-word | DONE | Gate server-side su `/v1/voice/command` (`continuous:true` → richiede prefisso `voice.wake_word`, default "bismuth", risposta `ignored:true` senza wake) + toggle Continuous nel client su flusso VAD→STT. Porcupine scartato: licenza+lib native |
+| P7-c | Mem0 memory | DONE | `sharedmem.Provider` interface; `Mem0` client REST (auth Token, decode version-tolerant) + `NewFallback(mem0, fts5)`; provenance `Memory.Source` (fts5/mem0). Config `memory.{mem0_base_url,mem0_api_key}`; senza config → FTS5 puro |
+| P7-d | Telegram/Discord bridge | DONE | `internal/bridge`: notifier (poll events: spawned/killed/assigned/approval/exited) → sendMessage + webhook Discord; comandi Telegram long-poll `/status /agents /tasks /kill` via API REST, gate sul chat_id. Config `bridge.*` |
+| P7-e | Multi-tenant | DONE (namespace V1) | Migration 002: colonna `tenant` su agents/tasks + indici; header `X-Bismuth-Tenant` (default "default") taggato su spawn/create e filtrato su list. Runner migration ora traccia `schema_migrations`. Per-team DB resta V2 |
+| P7-f | Web code-splitting | DONE | React.lazy su Terminal (xterm) e Voice (vad/onnx) + manualChunks (react-vendor/xterm/vad) |
+| P7-g | RBAC enforcement | DONE (PR #3) | viewer → 403 su spawn/send/kill |
+| P7-h | Audit trail UI | DONE | `GET /api/v1/audit` (newest-first, limit/offset) + vista Audit nel web; `audit.Recent()` |
+| P7-i | Task drag-drop | DONE | DnD HTML5 nativo task→agent card → `POST /tasks/{id}/assign` |
+| P7-j | SSE streaming | DONE | `GET /api/v1/agents/{id}/stream` (event: output `chunk_b64` / state) via fanout per-pane in `pane.Manager.Attach`; ping 15s; `statusRecorder.Flush` per attraversare i middleware. Client: EventSource→xterm con fallback polling |
+
+Note integrazione: i servizi esterni (LiveKit SFU, bot Telegram, Mem0)
+sono config-gated — senza chiavi il sistema degrada ai path V1 (stub
+room, bridge inerte, FTS5). `server-sdk-go` NON è in go.mod: il client
+Twirp generato in `protocol/livekit` è lo stesso codice che lksdk
+avvolge.
+
+## Backlog futuro (V2)
+
+- LiveKit: agente publisher audio nel room (oggi: token + room admin)
+- Wake-word on-device (Porcupine/OpenWakeWord, richiede licenza/native)
+- Cognee graph memory (Mem0 già pluggable via Provider)
+- Multi-tenant: per-team DB + auth per-tenant (oggi: namespace header)
+- Web: virtualized feed, audit pagination UI
 
 ## Architettura chiave
 
