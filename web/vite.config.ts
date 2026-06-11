@@ -50,5 +50,38 @@ export default defineConfig({
   build: {
     outDir: "dist",
     sourcemap: true,
+    rollupOptions: {
+      output: {
+        // P7-f code-splitting: keep the entry chunk lean. Heavy zones
+        // (Terminal/Voice) are React.lazy'd, and their vendor deps get
+        // dedicated chunks so they never ride along with the entry:
+        //   react-vendor — react/react-dom/scheduler + zustand (eager)
+        //   xterm        — @xterm/* (loaded with the Terminal zone)
+        //   vad          — @ricky0123/vad-web + onnxruntime-web
+        //                  (loaded when the Voice zone mounts)
+        manualChunks(id: string) {
+          // Vite's virtual runtime helpers (\0vite/preload-helper.js
+          // etc.) are shared by the entry and every lazy chunk; pin
+          // them to the eager vendor chunk, otherwise rolldown may
+          // colocate them with a lazy vendor chunk (observed: "vad")
+          // and drag ~420 kB into the entry's modulepreload graph.
+          if (id.startsWith("\0vite/") || id.includes("vite/preload-helper")) {
+            return "react-vendor";
+          }
+          if (!id.includes("node_modules")) return undefined;
+          if (id.includes("@xterm")) return "xterm";
+          if (id.includes("@ricky0123") || id.includes("onnxruntime")) return "vad";
+          if (
+            id.includes("/react/") ||
+            id.includes("/react-dom/") ||
+            id.includes("/scheduler/") ||
+            id.includes("/zustand/")
+          ) {
+            return "react-vendor";
+          }
+          return undefined;
+        },
+      },
+    },
   },
 });

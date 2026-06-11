@@ -1,5 +1,7 @@
 // lib/api.ts — minimal REST client for bismuth server.
 
+import type { AuditEntry, Task, VoiceCommandResponse } from "./types";
+
 const base = ""; // vite proxy handles it
 
 export async function listAgents() {
@@ -40,6 +42,39 @@ export async function killAgent(agentId: string) {
   return r.json();
 }
 
+export async function listTasks(): Promise<{ tasks: Task[] }> {
+  const r = await fetch(`${base}/api/v1/tasks`);
+  if (!r.ok) throw new Error(`listTasks ${r.status}`);
+  return r.json();
+}
+
+// assignTask: drag-and-drop assignment target (P7-i).
+export async function assignTask(taskId: string, agentId: string) {
+  const r = await fetch(`${base}/api/v1/tasks/${encodeURIComponent(taskId)}/assign`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ agent_id: agentId }),
+  });
+  if (!r.ok) {
+    let msg = `assignTask ${r.status}`;
+    try {
+      const b = await r.json();
+      if (b?.error) msg = b.error;
+    } catch {
+      /* keep status message */
+    }
+    throw new Error(msg);
+  }
+  return r.json();
+}
+
+// getAudit: tamper-evident audit trail, newest first (P7-h).
+export async function getAudit(limit = 100, offset = 0): Promise<{ entries: AuditEntry[] }> {
+  const r = await fetch(`${base}/api/v1/audit?limit=${limit}&offset=${offset}`);
+  if (!r.ok) throw new Error(`audit ${r.status}`);
+  return r.json();
+}
+
 export async function stt(audio: Blob, lang = "it"): Promise<string> {
   const fd = new FormData();
   fd.append("file", audio, "audio.webm");
@@ -63,16 +98,18 @@ export async function speak(text: string): Promise<Blob> {
   return new Blob([arr], { type: `audio/${format}` });
 }
 
-// voiceCommand: STT + parse + TTS in one call.
-// Returns { transcript, action, audio_url? }
-export async function voiceCommand(form: FormData, signal?: AbortSignal): Promise<{
-  transcript: string;
-  action: string;
-  audio_url?: string;
-}> {
+// voiceCommand: parse + dispatch a transcribed command (P7-b).
+// continuous=true enables server-side wake-word gating ("bismuth …");
+// the server replies ignored=true when no wake word was detected.
+export async function voiceCommand(
+  text: string,
+  continuous = false,
+  signal?: AbortSignal
+): Promise<VoiceCommandResponse> {
   const r = await fetch(`${base}/v1/voice/command`, {
     method: "POST",
-    body: form,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text, continuous }),
     signal,
   });
   if (!r.ok) throw new Error(`voiceCommand ${r.status}`);

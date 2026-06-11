@@ -37,3 +37,25 @@ export type Task = {
   cost_ceiling_usd: number;
   cost_used_usd: number;
 };
+
+// AuditEntry matches internal/audit Entry (GET /api/v1/audit).
+// payload is a JSON-encoded string server-side, but tolerate objects.
+export type AuditEntry = {
+  seq: number;
+  ts: string;
+  actor: string;
+  action: string;
+  target: string;
+  payload: unknown;
+  row_hash: string;
+};
+
+// VoiceCommandResponse matches POST /v1/voice/command.
+// ignored=true means wake-word not detected in continuous mode.
+export type VoiceCommandResponse = {
+  heard: string;
+  action: string;
+  args?: string[];
+  text_response?: string;
+  ignored?: boolean;
+};

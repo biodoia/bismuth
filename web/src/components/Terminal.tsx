@@ -1,11 +1,19 @@
 // components/Terminal.tsx — center panel with agent tabs + xterm.js.
-// Wireframe v1 design system. Keeps xterm.js for the terminal but redesigns the wrapper.
+// Wireframe v1 design system.
+//
+// Live output (P7-j): on agent select we backfill scrollback once via
+// GET /read?n=200, then follow the SSE stream /agents/:id/stream
+// (event `output` → base64 chunk → xterm.write). If the EventSource
+// errors it is closed and we fall back to polling /read every 2s.
+// Keystrokes are forwarded via POST /send.
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
-import type { Agent, Event } from "../lib/types";
-import { sendToAgent } from "../lib/api";
+import "@xterm/xterm/css/xterm.css";
+import type { Agent } from "../lib/types";
+import { sendToAgent, readAgent } from "../lib/api";
+import { useAgentStream } from "../hooks/useAgentStream";
 
 interface TerminalProps {
   selectedAgentId: string | null;
@@ -18,10 +26,25 @@ export default function Terminal({ selectedAgentId, onSelectAgent, agents }: Ter
   const termRef = useRef<XTerm | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const selectedRef = useRef<string>("");
-  const [status, setStatus] = useState<"connecting" | "live" | "offline">("offline");
-  const [error, setError] = useState<string | null>(null);
+  // While backfilling /read, SSE chunks are buffered here (null = live).
+  const pendingRef = useRef<Uint8Array[] | null>(null);
+  const lastScrollbackRef = useRef<string>("");
   const [overflowTabs, setOverflowTabs] = useState(false);
   const tabsRef = useRef<HTMLDivElement>(null);
+
+  // SSE live stream (preferred transport). Also patches the agent's
+  // state badge in the store on `state` events (inside the hook).
+  const { status: sseStatus } = useAgentStream(selectedAgentId || null, {
+    onOutput: (bytes) => {
+      const term = termRef.current;
+      if (!term) return;
+      if (pendingRef.current) {
+        pendingRef.current.push(bytes); // backfill in flight — keep order
+      } else {
+        term.write(bytes);
+      }
+    },
+  });
 
   // Init xterm once
   useEffect(() => {
@@ -62,7 +85,6 @@ export default function Terminal({ selectedAgentId, onSelectAgent, agents }: Ter
     fit.fit();
     termRef.current = term;
     fitRef.current = fit;
-    term.writeln("\x1b[2m— no agent selected —\x1b[0m");
 
     const onResize = () => {
       fit.fit();
@@ -92,45 +114,72 @@ export default function Terminal({ selectedAgentId, onSelectAgent, agents }: Ter
     }
   }, [agents]);
 
-  // Live WS attach whenever selected changes
+  // Backfill scrollback whenever the selected agent changes, buffering
+  // live SSE chunks until the snapshot has been written.
   useEffect(() => {
-    if (!selectedAgentId) return;
-    setStatus("connecting");
-    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const url = `${proto}//${window.location.host}/api/v1/ws?types=pane_output&agent_id=${encodeURIComponent(selectedAgentId)}`;
-
     const term = termRef.current;
     if (!term) return;
-    term.clear();
-    term.writeln(`\x1b[2m— connecting to ${selectedAgentId.slice(0, 12)}… —\x1b[0m`);
+    if (!selectedAgentId) {
+      selectedRef.current = "";
+      term.reset();
+      term.writeln("\x1b[2m— no agent selected —\x1b[0m");
+      return;
+    }
+    selectedRef.current = selectedAgentId;
+    pendingRef.current = [];
+    lastScrollbackRef.current = "";
+    term.reset();
+    term.writeln(`\x1b[2m— attaching to ${selectedAgentId.slice(0, 12)}… —\x1b[0m`);
 
-    const ws = new WebSocket(url);
-    ws.onopen = () => {
-      setStatus("live");
-      setError(null);
-      selectedRef.current = selectedAgentId;
-    };
-    ws.onclose = () => {
-      setStatus("offline");
-    };
-    ws.onerror = () => {
-      setError("ws error");
-    };
-    ws.onmessage = (ev) => {
-      try {
-        const e: Event = JSON.parse(ev.data);
-        if (e.type === "pane_output") {
-          const bytes = (e.payload as { bytes?: number })?.bytes ?? 0;
-          term.writeln(`\x1b[2m[pane_output +${bytes}B]\x1b[0m`);
-        }
-      } catch {
-        /* ignore */
-      }
-    };
+    let cancelled = false;
+    readAgent(selectedAgentId, 200)
+      .then((body) => {
+        if (cancelled) return;
+        const sb: string = body.scrollback || "";
+        lastScrollbackRef.current = sb;
+        term.reset();
+        if (sb) term.write(sb);
+      })
+      .catch(() => {
+        if (!cancelled) term.writeln("\x1b[31m[scrollback read failed]\x1b[0m");
+      })
+      .finally(() => {
+        if (cancelled) return;
+        // Flush chunks that arrived while backfilling, then go live.
+        const pending = pendingRef.current;
+        pendingRef.current = null;
+        const t = termRef.current;
+        if (t && pending) for (const b of pending) t.write(b);
+      });
+
     return () => {
-      ws.close();
+      cancelled = true;
+      pendingRef.current = null;
     };
   }, [selectedAgentId]);
+
+  // Fallback: SSE failed → poll /read and rewrite on change.
+  useEffect(() => {
+    if (!selectedAgentId || sseStatus !== "error") return;
+    const poll = async () => {
+      try {
+        const body = await readAgent(selectedAgentId, 200);
+        const sb: string = body.scrollback || "";
+        if (sb === lastScrollbackRef.current) return;
+        lastScrollbackRef.current = sb;
+        const term = termRef.current;
+        if (term && pendingRef.current === null) {
+          term.reset();
+          term.write(sb);
+        }
+      } catch {
+        /* server unreachable — keep polling */
+      }
+    };
+    poll();
+    const id = setInterval(poll, 2000);
+    return () => clearInterval(id);
+  }, [selectedAgentId, sseStatus]);
 
   // Fit terminal when container resizes
   useEffect(() => {
@@ -162,6 +211,17 @@ export default function Terminal({ selectedAgentId, onSelectAgent, agents }: Ter
   const activeAgents = agents.filter(
     (a) => a.state === "working" || a.state === "idle" || a.state === "planning" || a.state === "reviewing"
   );
+
+  // Transport status for the indicator: sse | polling | connecting | off.
+  const transport = !selectedAgentId
+    ? { label: "offline", color: "#555" }
+    : sseStatus === "open"
+    ? { label: "live · sse", color: "#22C55E" }
+    : sseStatus === "connecting"
+    ? { label: "connecting", color: "#EAB308" }
+    : sseStatus === "error"
+    ? { label: "polling", color: "#3B82F6" }
+    : { label: "offline", color: "#555" };
 
   return (
     <div className="flex flex-col h-full">
@@ -209,40 +269,17 @@ export default function Terminal({ selectedAgentId, onSelectAgent, agents }: Ter
           })}
         </div>
 
-        {/* Status indicator */}
+        {/* Transport status indicator */}
         <div className="flex items-center gap-2 px-3 shrink-0">
           <span
             className="inline-block w-1.5 h-1.5 rounded-full"
-            style={{
-              background:
-                status === "live"
-                  ? "#22C55E"
-                  : status === "connecting"
-                  ? "#EAB308"
-                  : "#555",
-            }}
+            style={{ background: transport.color }}
           />
-          <span
-            className="text-[10px]"
-            style={{
-              color:
-                status === "live"
-                  ? "#22C55E"
-                  : status === "connecting"
-                  ? "#EAB308"
-                  : "#555",
-            }}
-          >
-            {status}
+          <span className="text-[10px]" style={{ color: transport.color }}>
+            {transport.label}
           </span>
         </div>
       </div>
-
-      {error && (
-        <div className="px-3 py-1 text-[10px] text-[#EF4444] bg-[rgba(239,68,68,0.08)]">
-          {error}
-        </div>
-      )}
 
       {/* xterm container */}
       <div
@@ -256,7 +293,11 @@ export default function Terminal({ selectedAgentId, onSelectAgent, agents }: Ter
         className="flex items-center justify-between px-3 py-1 border-t text-[10px] text-[#555]"
         style={{ borderColor: "rgba(255,255,255,0.06)" }}
       >
-        <span>WS live attach</span>
+        <span>
+          {sseStatus === "error"
+            ? "SSE unavailable — polling /read every 2s"
+            : "SSE live attach · /read backfill"}
+        </span>
         {overflowTabs && <span>→ scroll tabs</span>}
       </div>
     </div>

@@ -1,9 +1,22 @@
 // components/Header.tsx — top bar 40px with bismuth branding, ws-status pulsing dot.
-// Uses wireframe v1 design system colors.
+// Uses wireframe v1 design system colors. Hosts the dashboard/audit
+// view switcher (P7-h) on desktop; mobile reaches audit via its tab.
 
 import { useBismuthWS } from "../hooks/useWebSocket";
 
-export default function Header() {
+export type View = "dashboard" | "audit";
+
+interface HeaderProps {
+  view: View;
+  onViewChange: (v: View) => void;
+}
+
+const VIEWS: { key: View; label: string }[] = [
+  { key: "dashboard", label: "dashboard" },
+  { key: "audit", label: "audit" },
+];
+
+export default function Header({ view, onViewChange }: HeaderProps) {
   const { connected } = useBismuthWS({});
 
   return (
@@ -11,12 +24,29 @@ export default function Header() {
       className="flex items-center justify-between px-4 border-b bg-[#0f1011]"
       style={{ height: 40, borderColor: "rgba(255,255,255,0.06)" }}
     >
-      {/* Left: brand */}
+      {/* Left: brand + view switcher */}
       <div className="flex items-center gap-3">
         <span className="text-sm font-semibold tracking-tight text-[#ededed]">
           ◈ bismuth
         </span>
-        <span className="text-[10px] text-[#555]">multi-agent multiplexer</span>
+        <span className="text-[10px] text-[#555] hidden sm:inline">multi-agent multiplexer</span>
+
+        {/* View switcher (desktop) */}
+        <nav className="hidden md:flex items-center gap-1 ml-3">
+          {VIEWS.map((v) => (
+            <button
+              key={v.key}
+              onClick={() => onViewChange(v.key)}
+              className="text-[11px] px-2 py-1 rounded transition-colors"
+              style={{
+                color: view === v.key ? "#ededed" : "#555",
+                background: view === v.key ? "#161718" : "transparent",
+              }}
+            >
+              {v.label}
+            </button>
+          ))}
+        </nav>
       </div>
 
       {/* Right: ws status + links */}
