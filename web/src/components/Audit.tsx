@@ -1,116 +1,235 @@
-// components/Audit.tsx — audit log timeline with SHA verification.
+// components/Audit.tsx — tamper-evident audit trail view (P7-h).
 //
-// Shows the last N audit events from /api/v1/events?types=audit_log.
-// Each event displays: timestamp, actor, action, target, SHA badge.
-// Clicking an event reveals the full payload and SHA256 verification.
+// Renders GET /api/v1/audit?limit=100&offset=0 (newest first) as a
+// table: ts | actor | action | target | payload (truncated, click to
+// expand) | row_hash (short prefix, full hash in tooltip).
+// Manual refresh button + auto-refresh every 10s.
+// Wireframe v1 design system.
 
-import { useEffect, useState } from "react";
-import type { Event } from "../lib/types";
+import { useCallback, useEffect, useState } from "react";
+import { getAudit } from "../lib/api";
+import type { AuditEntry } from "../lib/types";
 
-interface AuditEntry {
-  seq: number;
-  ts: string;
-  actor: string;
-  action: string;
-  target: string;
-  sha: string;
-  payload: Record<string, unknown>;
+const ACTION_COLOR: Record<string, string> = {
+  spawn_agent: "#22C55E",
+  kill_agent: "#EF4444",
+  denied_kill: "#EF4444",
+  assign_task: "#3B82F6",
+  create_task: "#3B82F6",
+  merge_task: "#A855F7",
+  voice_stt: "#A855F7",
+  voice_command: "#A855F7",
+  send: "#06B6D4",
+};
+
+// payloadText normalizes the payload (JSON string server-side, but be
+// liberal) into a displayable string.
+function payloadText(p: unknown): string {
+  if (p == null || p === "") return "";
+  if (typeof p === "string") {
+    try {
+      return JSON.stringify(JSON.parse(p));
+    } catch {
+      return p;
+    }
+  }
+  try {
+    return JSON.stringify(p);
+  } catch {
+    return String(p);
+  }
+}
+
+function payloadPretty(p: unknown): string {
+  if (p == null || p === "") return "—";
+  if (typeof p === "string") {
+    try {
+      return JSON.stringify(JSON.parse(p), null, 2);
+    } catch {
+      return p;
+    }
+  }
+  try {
+    return JSON.stringify(p, null, 2);
+  } catch {
+    return String(p);
+  }
+}
+
+function fmtTS(ts: string): string {
+  // 2026-06-10T12:34:56.789Z → "06-10 12:34:56"
+  if (ts.length >= 19) return `${ts.slice(5, 10)} ${ts.slice(11, 19)}`;
+  return ts;
 }
 
 export default function Audit() {
   const [entries, setEntries] = useState<AuditEntry[]>([]);
   const [expanded, setExpanded] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [lastFetch, setLastFetch] = useState<string>("");
 
-  useEffect(() => {
-    const fetchAudit = async () => {
-      try {
-        const r = await fetch("/api/v1/events?types=audit_log&limit=50");
-        if (!r.ok) throw new Error(`audit ${r.status}`);
-        const data = await r.json();
-        const evs: Event[] = data.events || [];
-        const mapped: AuditEntry[] = evs.map((e) => {
-          const p = (e.payload || {}) as Record<string, unknown>;
-          return {
-            seq: e.seq ?? 0,
-            ts: e.ts ?? "",
-            actor: (p.actor as string) || "system",
-            action: (p.action as string) || e.type,
-            target: (p.target as string) || "—",
-            sha: (p.sha as string) || "—",
-            payload: p,
-          };
-        });
-        setEntries(mapped);
-      } catch (e: unknown) {
-        setError((e as Error)?.message || "load failed");
-      }
-    };
-    fetchAudit();
-    const t = setInterval(fetchAudit, 5000);
-    return () => clearInterval(t);
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    try {
+      const body = await getAudit(100, 0);
+      setEntries(body.entries || []);
+      setError(null);
+      setLastFetch(new Date().toLocaleTimeString());
+    } catch (e: unknown) {
+      setError((e as Error)?.message || "audit load failed");
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
-  const verify = (entry: AuditEntry): "valid" | "missing" | "mismatch" => {
-    if (!entry.sha || entry.sha === "—") return "missing";
-    // V1: SHA is computed server-side; we trust it. V2: client-side
-    // recomputation via subtle.crypto.digest("SHA-256", payloadBytes).
-    return "valid";
-  };
+  useEffect(() => {
+    refresh();
+    const id = setInterval(refresh, 10_000);
+    return () => clearInterval(id);
+  }, [refresh]);
 
   return (
-    <div className="flex flex-col h-full gap-2">
-      <header className="flex items-center justify-between">
-        <h2 className="text-sm font-semibold">Audit</h2>
-        <span className="text-[10px] text-zinc-500">aggiorna ogni 5s</span>
-      </header>
+    <div className="flex flex-col h-full min-h-0">
+      {/* Section header */}
+      <div
+        className="flex items-center justify-between px-3 py-2 border-b shrink-0"
+        style={{ borderColor: "rgba(255,255,255,0.06)" }}
+      >
+        <div className="flex items-center gap-3">
+          <h2 className="text-xs font-semibold text-[#ededed] uppercase tracking-wider">
+            Audit
+          </h2>
+          <span className="text-[10px] text-[#555]">
+            tamper-evident trail · last 100 · newest first
+          </span>
+        </div>
+        <div className="flex items-center gap-3">
+          {lastFetch && (
+            <span className="text-[10px] text-[#555]">
+              {lastFetch} · auto 10s
+            </span>
+          )}
+          <button
+            onClick={refresh}
+            disabled={loading}
+            className="text-[10px] px-2.5 py-1 rounded font-medium bg-[rgba(0,212,170,0.15)] text-[#00D4AA] border border-[rgba(0,212,170,0.25)] hover:bg-[rgba(0,212,170,0.25)] disabled:opacity-40 transition-colors"
+          >
+            {loading ? "…" : "↻ refresh"}
+          </button>
+        </div>
+      </div>
 
-      {error && <p className="text-xs text-rose-400">{error}</p>}
+      {error && (
+        <div className="px-3 py-1 text-[10px] text-[#EF4444] bg-[rgba(239,68,68,0.08)] shrink-0">
+          {error}
+        </div>
+      )}
 
-      <div className="flex-1 overflow-y-auto space-y-1">
-        {entries.length === 0 && (
-          <p className="text-xs text-zinc-600">Nessun evento audit.</p>
-        )}
-        {entries.map((e) => {
-          const v = verify(e);
-          return (
-            <div
-              key={e.seq}
-              className="text-xs bg-zinc-900 rounded p-2 cursor-pointer hover:bg-zinc-800 transition-colors"
-              onClick={() => setExpanded(expanded === e.seq ? null : e.seq)}
+      {/* Table */}
+      <div className="flex-1 overflow-auto min-h-0">
+        <table className="w-full text-[11px]" style={{ borderCollapse: "collapse" }}>
+          <thead>
+            <tr
+              className="text-left text-[10px] uppercase tracking-wider text-[#555] sticky top-0"
+              style={{ background: "#0f1011" }}
             >
-              <div className="flex items-center gap-2">
-                <span
-                  className={`w-2 h-2 rounded-full ${
-                    v === "valid"
-                      ? "bg-emerald-400"
-                      : v === "missing"
-                      ? "bg-amber-300"
-                      : "bg-rose-400"
-                  }`}
-                  title={v}
-                />
-                <span className="text-zinc-400 font-mono">#{e.seq}</span>
-                <span className="text-zinc-300">{e.action}</span>
-                <span className="text-zinc-500">→ {e.target}</span>
-                <span className="text-[10px] text-zinc-600 ml-auto">{e.ts}</span>
-              </div>
-              {expanded === e.seq && (
-                <div className="mt-2 space-y-1 border-t border-zinc-800 pt-2">
-                  <p className="text-[10px] text-zinc-500">
-                    actor: <span className="text-zinc-300">{e.actor}</span>
-                  </p>
-                  <p className="text-[10px] text-zinc-500">
-                    SHA: <span className="font-mono text-zinc-300">{e.sha}</span>
-                  </p>
-                  <pre className="text-[10px] text-zinc-400 overflow-x-auto">
-                    {JSON.stringify(e.payload, null, 2)}
-                  </pre>
-                </div>
-              )}
-            </div>
-          );
-        })}
+              <th className="px-3 py-2 font-medium w-28">ts</th>
+              <th className="px-3 py-2 font-medium w-32">actor</th>
+              <th className="px-3 py-2 font-medium w-28">action</th>
+              <th className="px-3 py-2 font-medium w-40">target</th>
+              <th className="px-3 py-2 font-medium">payload</th>
+              <th className="px-3 py-2 font-medium w-24">hash</th>
+            </tr>
+          </thead>
+          <tbody>
+            {entries.length === 0 && !error && (
+              <tr>
+                <td colSpan={6} className="px-3 py-8 text-center text-[10px] text-[#555]">
+                  — no audit entries —
+                </td>
+              </tr>
+            )}
+            {entries.map((e) => {
+              const isExpanded = expanded === e.seq;
+              const ptext = payloadText(e.payload);
+              const truncated = ptext.length > 96 ? `${ptext.slice(0, 96)}…` : ptext;
+              const actionColor = ACTION_COLOR[e.action] || "#ededed";
+              return (
+                <tr
+                  key={e.seq}
+                  onClick={() => setExpanded(isExpanded ? null : e.seq)}
+                  className="cursor-pointer align-top transition-colors border-b hover:bg-[#161718]"
+                  style={{
+                    borderColor: "rgba(255,255,255,0.04)",
+                    background: isExpanded ? "#161718" : "transparent",
+                  }}
+                >
+                  <td
+                    className="px-3 py-1.5 text-[#888] whitespace-nowrap"
+                    style={{ fontFamily: "'JetBrains Mono', monospace" }}
+                    title={e.ts}
+                  >
+                    {fmtTS(e.ts)}
+                  </td>
+                  <td className="px-3 py-1.5 text-[#888] truncate max-w-32" title={e.actor}>
+                    {e.actor || "—"}
+                  </td>
+                  <td className="px-3 py-1.5 font-medium" style={{ color: actionColor }}>
+                    {e.action}
+                  </td>
+                  <td
+                    className="px-3 py-1.5 text-[#888] truncate max-w-40"
+                    style={{ fontFamily: "'JetBrains Mono', monospace" }}
+                    title={e.target}
+                  >
+                    {e.target || "—"}
+                  </td>
+                  <td className="px-3 py-1.5 text-[#888]">
+                    {isExpanded ? (
+                      <pre
+                        className="whitespace-pre-wrap break-all text-[10px] text-[#aaa] max-h-64 overflow-y-auto"
+                        style={{ fontFamily: "'JetBrains Mono', monospace" }}
+                      >
+                        {payloadPretty(e.payload)}
+                      </pre>
+                    ) : (
+                      <span
+                        className="text-[10px] break-all"
+                        style={{ fontFamily: "'JetBrains Mono', monospace" }}
+                      >
+                        {truncated || "—"}
+                        {ptext.length > 96 && (
+                          <span className="text-[#555] ml-1">▸</span>
+                        )}
+                      </span>
+                    )}
+                  </td>
+                  <td className="px-3 py-1.5">
+                    <span
+                      className="text-[10px] text-[#555] px-1.5 py-0.5 rounded bg-[#161718] cursor-help"
+                      style={{ fontFamily: "'JetBrains Mono', monospace" }}
+                      title={e.row_hash}
+                    >
+                      {e.row_hash ? e.row_hash.slice(0, 8) : "—"}
+                    </span>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Footer */}
+      <div
+        className="flex items-center justify-between px-3 py-1.5 border-t text-[10px] text-[#555] shrink-0"
+        style={{ borderColor: "rgba(255,255,255,0.06)" }}
+      >
+        <span>{entries.length} entries</span>
+        <span>
+          seq #{entries.length > 0 ? entries[0].seq : 0} · hash chain sha256
+        </span>
       </div>
     </div>
   );

@@ -1,16 +1,12 @@
 // components/Agents.tsx — agent sidebar (240px) with spawn controls, clickable cards.
-// Wireframe v1 design system. Fetches /api/v1/agents, POST /api/v1/agents, POST kill.
+// Wireframe v1 design system. Agent list lives in the zustand store
+// (polled by App, patched live by SSE state events).
+// Agent cards are drop targets for task drag-and-drop assignment (P7-i).
 
 import { useState, useEffect, useCallback } from "react";
-
-interface Agent {
-  id: string;
-  role: string;
-  cli: string;
-  state: string;
-  task_id: string;
-  created_at: string;
-}
+import { assignTask } from "../lib/api";
+import { useBismuthStore } from "../lib/store";
+import { TASK_DRAG_MIME } from "./Tasks";
 
 interface AgentsProps {
   selectedAgentId: string | null;
@@ -26,6 +22,7 @@ const STATE_DOT: Record<string, string> = {
   planning: "#22C55E",
   reviewing: "#EAB308",
   blocked: "#EF4444",
+  exited: "#EF4444",
 };
 
 const STATE_LABEL: Record<string, string> = {
@@ -37,6 +34,7 @@ const STATE_LABEL: Record<string, string> = {
   planning: "planning",
   reviewing: "reviewing",
   blocked: "blocked",
+  exited: "exited",
 };
 
 const ROLE_ICONS: Record<string, string> = {
@@ -61,24 +59,23 @@ const ROLES = [
   "researcher",
 ];
 
+// isTaskDrag: only react to our own drag payloads.
+function isTaskDrag(e: React.DragEvent): boolean {
+  return Array.from(e.dataTransfer.types).includes(TASK_DRAG_MIME);
+}
+
 export default function Agents({ selectedAgentId, onSelectAgent }: AgentsProps) {
-  const [agents, setAgents] = useState<Agent[]>([]);
+  const agents = useBismuthStore((s) => s.agents);
+  const fetchAgents = useBismuthStore((s) => s.fetchAgents);
+  const fetchTasks = useBismuthStore((s) => s.fetchTasks);
+  const showToast = useBismuthStore((s) => s.showToast);
+
   const [roles, setRoles] = useState<string[]>(ROLES);
   const [spawning, setSpawning] = useState(false);
   const [spawnRole, setSpawnRole] = useState("implementer");
   const [spawnTask, setSpawnTask] = useState("");
   const [error, setError] = useState("");
-
-  const fetchAgents = useCallback(async () => {
-    try {
-      const r = await fetch("/api/v1/agents");
-      if (!r.ok) return;
-      const body = await r.json();
-      setAgents(body.agents || []);
-    } catch {
-      /* ignore */
-    }
-  }, []);
+  const [dropTargetId, setDropTargetId] = useState<string | null>(null);
 
   const fetchRoles = useCallback(async () => {
     try {
@@ -94,11 +91,8 @@ export default function Agents({ selectedAgentId, onSelectAgent }: AgentsProps) 
   }, []);
 
   useEffect(() => {
-    fetchAgents();
     fetchRoles();
-    const id = setInterval(fetchAgents, 3000);
-    return () => clearInterval(id);
-  }, [fetchAgents, fetchRoles]);
+  }, [fetchRoles]);
 
   const handleSpawn = async () => {
     setSpawning(true);
@@ -130,6 +124,27 @@ export default function Agents({ selectedAgentId, onSelectAgent }: AgentsProps) 
     e.stopPropagation();
     await fetch(`/api/v1/agents/${id}/kill`, { method: "POST" });
     setTimeout(fetchAgents, 500);
+  };
+
+  // handleDrop: task dropped on an agent card → POST assign + optimistic refresh.
+  const handleDrop = async (e: React.DragEvent, agentId: string) => {
+    e.preventDefault();
+    setDropTargetId(null);
+    const taskId =
+      e.dataTransfer.getData(TASK_DRAG_MIME) || e.dataTransfer.getData("text/plain");
+    if (!taskId) return;
+    try {
+      await assignTask(taskId, agentId);
+      showToast(`task ${taskId.slice(0, 10)} → ${agentId.slice(0, 12)}`, "success");
+    } catch (err: unknown) {
+      showToast(
+        `assign failed: ${(err as Error)?.message || "error"}`,
+        "error"
+      );
+    }
+    // Optimistic refresh either way: server is the source of truth.
+    fetchTasks();
+    fetchAgents();
   };
 
   const active = agents.filter(
@@ -198,17 +213,33 @@ export default function Agents({ selectedAgentId, onSelectAgent }: AgentsProps) 
         )}
         {active.map((a) => {
           const isSelected = selectedAgentId === a.id;
+          const isDropTarget = dropTargetId === a.id;
           const dotColor = STATE_DOT[a.state] || "#555";
           return (
             <li
               key={a.id}
               onClick={() => onSelectAgent(a.id)}
+              onDragOver={(e) => {
+                if (!isTaskDrag(e)) return;
+                e.preventDefault();
+                e.dataTransfer.dropEffect = "move";
+                setDropTargetId(a.id);
+              }}
+              onDragLeave={(e) => {
+                // Ignore leave events caused by entering a child node.
+                if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+                setDropTargetId((cur) => (cur === a.id ? null : cur));
+              }}
+              onDrop={(e) => handleDrop(e, a.id)}
               className="group rounded p-2 cursor-pointer transition-all border"
               style={{
-                background: isSelected ? "#161718" : "#0f1011",
-                borderColor: isSelected
+                background: isDropTarget ? "rgba(0,212,170,0.08)" : isSelected ? "#161718" : "#0f1011",
+                borderColor: isDropTarget
+                  ? "#00D4AA"
+                  : isSelected
                   ? "#00D4AA"
                   : "rgba(255,255,255,0.06)",
+                boxShadow: isDropTarget ? "0 0 0 2px rgba(0,212,170,0.35)" : undefined,
               }}
             >
               <div className="flex items-center justify-between gap-2">
@@ -255,6 +286,11 @@ export default function Agents({ selectedAgentId, onSelectAgent }: AgentsProps) 
                   style={{ fontFamily: "'JetBrains Mono', monospace" }}
                 >
                   task: {a.task_id}
+                </div>
+              )}
+              {isDropTarget && (
+                <div className="text-[9px] text-[#00D4AA] mt-1">
+                  ⇣ drop to assign task
                 </div>
               )}
             </li>
