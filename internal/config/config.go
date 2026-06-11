@@ -2,21 +2,21 @@
 //
 // Example config.yaml:
 //
-//   server:
-//     host: 0.0.0.0
-//     port: 9000
-//   db:
-//     path: ./data/bismuth.db
-//   voice:
-//     stt_provider: groq          # groq | deepgram | openai | gemini
-//     stt_model: whisper-large-v3-turbo
-//     tts_provider: edge          # edge | openai | elevenlabs | google
-//     tts_voice: it-IT-IsabellaNeural
-//   security:
-//     allowed_commands: [...]
-//     cost_ceiling_per_task_usd: 2.0
-//   audit:
-//     salt: changeme
+//	server:
+//	  host: 0.0.0.0
+//	  port: 9000
+//	db:
+//	  path: ./data/bismuth.db
+//	voice:
+//	  stt_provider: groq          # groq | deepgram | openai | gemini
+//	  stt_model: whisper-large-v3-turbo
+//	  tts_provider: edge          # edge | openai | elevenlabs | google
+//	  tts_voice: it-IT-IsabellaNeural
+//	security:
+//	  allowed_commands: [...]
+//	  cost_ceiling_per_task_usd: 2.0
+//	audit:
+//	  salt: changeme
 package config
 
 import (
@@ -29,16 +29,44 @@ import (
 )
 
 type Config struct {
-	Server    ServerCfg          `yaml:"server"`
-	DB        DBCfg              `yaml:"db"`
-	Pane      PaneCfg            `yaml:"pane"`
-	Voice     VoiceCfg           `yaml:"voice"`
-	Security  SecurityCfg        `yaml:"security"`
-	Audit     AuditCfg           `yaml:"audit"`
-	NineR     NineRCfg           `yaml:"ninerouter"`
-	API       APICfg             `yaml:"api"`
-	Providers map[string]ProviderCfg `yaml:"providers"`
+	Server    ServerCfg                    `yaml:"server"`
+	DB        DBCfg                        `yaml:"db"`
+	Pane      PaneCfg                      `yaml:"pane"`
+	Voice     VoiceCfg                     `yaml:"voice"`
+	Security  SecurityCfg                  `yaml:"security"`
+	Audit     AuditCfg                     `yaml:"audit"`
+	NineR     NineRCfg                     `yaml:"ninerouter"`
+	API       APICfg                       `yaml:"api"`
+	LiveKit   LiveKitCfg                   `yaml:"livekit"`
+	Bridge    BridgeCfg                    `yaml:"bridge"`
+	Memory    MemoryCfg                    `yaml:"memory"`
+	Providers map[string]ProviderCfg       `yaml:"providers"`
 	CLIEnv    map[string]map[string]string `yaml:"cli_env"`
+}
+
+// LiveKitCfg configures the real LiveKit voice path (P7-a). All three
+// fields set => enabled; otherwise the HTTP voice-room stubs answer.
+type LiveKitCfg struct {
+	URL       string `yaml:"url"`
+	APIKey    string `yaml:"api_key"`
+	APISecret string `yaml:"api_secret"`
+}
+
+// BridgeCfg configures the Telegram/Discord notification + remote
+// command bridge (P7-d). Values support ${VAR} env expansion.
+type BridgeCfg struct {
+	TelegramToken     string `yaml:"telegram_token"`
+	TelegramChatID    string `yaml:"telegram_chat_id"`
+	DiscordWebhookURL string `yaml:"discord_webhook_url"`
+	APIBase           string `yaml:"api_base"`
+	PollIntervalMS    int    `yaml:"poll_interval_ms"`
+}
+
+// MemoryCfg selects the shared-memory backend (P7-c). With Mem0
+// configured the FTS5 store remains as fallback.
+type MemoryCfg struct {
+	Mem0BaseURL string `yaml:"mem0_base_url"`
+	Mem0APIKey  string `yaml:"mem0_api_key"`
 }
 
 type ServerCfg struct {
@@ -66,11 +94,11 @@ type VoiceCfg struct {
 }
 
 type SecurityCfg struct {
-	AllowedCommands         []string `yaml:"allowed_commands"`
-	DeniedCommands          []string `yaml:"denied_commands"`
-	CostCeilingPerTaskUSD    float64  `yaml:"cost_ceiling_per_task_usd"`
-	WorktreeRequired        bool     `yaml:"worktree_required"`
-	HumanApprovalForPush    bool     `yaml:"human_approval_for_push"`
+	AllowedCommands       []string `yaml:"allowed_commands"`
+	DeniedCommands        []string `yaml:"denied_commands"`
+	CostCeilingPerTaskUSD float64  `yaml:"cost_ceiling_per_task_usd"`
+	WorktreeRequired      bool     `yaml:"worktree_required"`
+	HumanApprovalForPush  bool     `yaml:"human_approval_for_push"`
 }
 
 type AuditCfg struct {
@@ -135,9 +163,21 @@ func (c *Config) applyDefaults() {
 	if c.Voice.Language == "" {
 		c.Voice.Language = "it"
 	}
+	if c.Voice.WakeWord == "" {
+		c.Voice.WakeWord = "bismuth"
+	}
 	if c.Voice.VADMs == 0 {
 		c.Voice.VADMs = 1500
 	}
+	// Secrets support ${VAR} env references.
+	c.LiveKit.URL = resolveEnv(c.LiveKit.URL)
+	c.LiveKit.APIKey = resolveEnv(c.LiveKit.APIKey)
+	c.LiveKit.APISecret = resolveEnv(c.LiveKit.APISecret)
+	c.Bridge.TelegramToken = resolveEnv(c.Bridge.TelegramToken)
+	c.Bridge.TelegramChatID = resolveEnv(c.Bridge.TelegramChatID)
+	c.Bridge.DiscordWebhookURL = resolveEnv(c.Bridge.DiscordWebhookURL)
+	c.Memory.Mem0BaseURL = resolveEnv(c.Memory.Mem0BaseURL)
+	c.Memory.Mem0APIKey = resolveEnv(c.Memory.Mem0APIKey)
 	if c.Security.CostCeilingPerTaskUSD == 0 {
 		c.Security.CostCeilingPerTaskUSD = 2.0
 	}

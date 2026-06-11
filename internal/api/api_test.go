@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -8,7 +9,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/biodoia/bismuth/internal/audit"
 	"github.com/biodoia/bismuth/internal/bus"
@@ -341,6 +344,156 @@ func TestRBACEnforcement(t *testing.T) {
 	}
 	if code := do("POST", "/api/v1/agents/agt-x/kill", nil); code != 403 {
 		t.Errorf("viewer kill: got %d, want 403", code)
+	}
+}
+
+// TestAuditEndpoint verifies P7-h: spawning leaves an audit entry and
+// /api/v1/audit returns the trail newest-first.
+func TestAuditEndpoint(t *testing.T) {
+	env := newTestEnv(t)
+	defer env.Close()
+
+	_, _ = env.post("/api/v1/agents", map[string]any{
+		"role": "implementer", "cli": "bash", "task": "echo audit-me",
+	})
+
+	resp, body := env.get("/api/v1/audit?limit=10")
+	if resp.StatusCode != 200 {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	entries, ok := body["entries"].([]any)
+	if !ok || len(entries) == 0 {
+		t.Fatalf("expected audit entries, got %v", body["entries"])
+	}
+	first := entries[0].(map[string]any)
+	if first["action"] != "spawn_agent" {
+		t.Errorf("newest entry action = %v, want spawn_agent", first["action"])
+	}
+	if first["row_hash"] == "" || first["row_hash"] == nil {
+		t.Errorf("entry missing row_hash")
+	}
+}
+
+// TestVoiceCommandWakeWord verifies P7-b: continuous-mode utterances
+// without the wake word are ignored; with it, the command is parsed.
+func TestVoiceCommandWakeWord(t *testing.T) {
+	env := newTestEnv(t)
+	defer env.Close()
+
+	// Ambient speech: ignored.
+	resp, body := env.post("/v1/voice/command", map[string]any{
+		"text": "che ore sono", "continuous": true,
+	})
+	if resp.StatusCode != 200 {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	if body["ignored"] != true {
+		t.Fatalf("expected ignored=true, got %v", body)
+	}
+
+	// Wake word present: parsed, wake word stripped.
+	_, body = env.post("/v1/voice/command", map[string]any{
+		"text": "bismuth status agenti", "continuous": true,
+	})
+	if body["action"] != "status" {
+		t.Errorf("action = %v, want status", body["action"])
+	}
+
+	// Push-to-talk (non-continuous): no gating.
+	_, body = env.post("/v1/voice/command", map[string]any{
+		"text": "status", "continuous": false,
+	})
+	if body["action"] != "status" {
+		t.Errorf("non-continuous action = %v, want status", body["action"])
+	}
+}
+
+// TestTenantScoping verifies P7-e: agents spawned under a tenant are
+// only listed for that tenant.
+func TestTenantScoping(t *testing.T) {
+	env := newTestEnv(t)
+	defer env.Close()
+
+	postT := func(tenant string) {
+		b, _ := json.Marshal(map[string]any{"role": "implementer", "cli": "bash", "task": "echo hi"})
+		req, _ := http.NewRequest("POST", env.ts.URL+"/api/v1/agents", bytes.NewReader(b))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Bismuth-Tenant", tenant)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != 201 {
+			t.Fatalf("spawn under tenant %q: %d", tenant, resp.StatusCode)
+		}
+	}
+	listT := func(tenant string) int {
+		req, _ := http.NewRequest("GET", env.ts.URL+"/api/v1/agents", nil)
+		if tenant != "" {
+			req.Header.Set("X-Bismuth-Tenant", tenant)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		var body map[string]any
+		_ = json.Unmarshal(raw, &body)
+		agents, _ := body["agents"].([]any)
+		return len(agents)
+	}
+
+	postT("team-a")
+	if n := listT("team-a"); n != 1 {
+		t.Errorf("team-a sees %d agents, want 1", n)
+	}
+	if n := listT("team-b"); n != 0 {
+		t.Errorf("team-b sees %d agents, want 0", n)
+	}
+	if n := listT(""); n != 0 { // default namespace
+		t.Errorf("default tenant sees %d agents, want 0", n)
+	}
+}
+
+// TestAgentStreamSSE verifies P7-j: /stream speaks SSE and delivers the
+// initial state snapshot.
+func TestAgentStreamSSE(t *testing.T) {
+	env := newTestEnv(t)
+	defer env.Close()
+
+	_, sp := env.post("/api/v1/agents", map[string]any{
+		"role": "implementer", "cli": "bash", "task": "echo stream-me",
+	})
+	agentID, _ := sp["agent_id"].(string)
+	if agentID == "" {
+		t.Fatalf("no agent_id in spawn response: %v", sp)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, "GET", env.ts.URL+"/api/v1/agents/"+agentID+"/stream", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("stream request: %v", err)
+	}
+	defer resp.Body.Close()
+	if ct := resp.Header.Get("Content-Type"); ct != "text/event-stream" {
+		t.Fatalf("Content-Type = %q, want text/event-stream", ct)
+	}
+
+	// Read until the initial state event arrives.
+	sc := bufio.NewScanner(resp.Body)
+	sawState := false
+	for sc.Scan() {
+		if strings.HasPrefix(sc.Text(), "event: state") {
+			sawState = true
+			break
+		}
+	}
+	if !sawState {
+		t.Fatalf("never received initial state event")
 	}
 }
 

@@ -6,9 +6,9 @@
 //
 // Usage:
 //
-//   log, _ := audit.New(db, "my-random-salt")
-//   log.Append(ctx, "user:lisergico25", "spawn_agent", "omx-1", payload)
-//   ok, brokenAt, err := log.Verify(ctx)
+//	log, _ := audit.New(db, "my-random-salt")
+//	log.Append(ctx, "user:lisergico25", "spawn_agent", "omx-1", payload)
+//	ok, brokenAt, err := log.Verify(ctx)
 package audit
 
 import (
@@ -73,6 +73,43 @@ func (l *Log) Append(ctx context.Context, actor, action, target string, payload 
 	return tx.Commit()
 }
 
+// Entry is one audit row, newest-first when returned by Recent.
+type Entry struct {
+	Seq     int64  `json:"seq"`
+	TS      string `json:"ts"`
+	Actor   string `json:"actor"`
+	Action  string `json:"action"`
+	Target  string `json:"target"`
+	Payload string `json:"payload"`
+	RowHash string `json:"row_hash"`
+}
+
+// Recent returns audit entries newest-first for the trail UI.
+func (l *Log) Recent(ctx context.Context, limit, offset int) ([]Entry, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	rows, err := l.db.QueryContext(ctx,
+		`SELECT seq, ts, actor, action, target, COALESCE(payload,''), row_hash
+		 FROM audit_log ORDER BY seq DESC LIMIT ? OFFSET ?`, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Entry
+	for rows.Next() {
+		var e Entry
+		if err := rows.Scan(&e.Seq, &e.TS, &e.Actor, &e.Action, &e.Target, &e.Payload, &e.RowHash); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
 // Verify walks the chain and confirms every row_hash matches its content.
 // Returns (true, 0, nil) if all good, or (false, brokenSeq, err) on tamper.
 func (l *Log) Verify(ctx context.Context) (bool, int64, error) {
@@ -86,13 +123,13 @@ func (l *Log) Verify(ctx context.Context) (bool, int64, error) {
 	var seq int64
 	for rows.Next() {
 		var (
-			aSeq      int64
-			actor     string
-			action    string
-			target    string
-			payload   string
-			rowPrev   string
-			rowHash   string
+			aSeq    int64
+			actor   string
+			action  string
+			target  string
+			payload string
+			rowPrev string
+			rowHash string
 		)
 		if err := rows.Scan(&aSeq, &actor, &action, &target, &payload, &rowPrev, &rowHash); err != nil {
 			return false, 0, err

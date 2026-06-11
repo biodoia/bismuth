@@ -29,19 +29,22 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/biodoia/bismuth/internal/api"
 	"github.com/biodoia/bismuth/internal/audit"
+	"github.com/biodoia/bismuth/internal/bridge"
 	"github.com/biodoia/bismuth/internal/bus"
 	"github.com/biodoia/bismuth/internal/config"
 	"github.com/biodoia/bismuth/internal/db"
 	"github.com/biodoia/bismuth/internal/hermes"
 	"github.com/biodoia/bismuth/internal/logger"
 	"github.com/biodoia/bismuth/internal/mcp"
-	"github.com/biodoia/bismuth/internal/tui"
 	"github.com/biodoia/bismuth/internal/pane"
 	"github.com/biodoia/bismuth/internal/roles"
 	"github.com/biodoia/bismuth/internal/security"
+	"github.com/biodoia/bismuth/internal/sharedmem"
+	"github.com/biodoia/bismuth/internal/tui"
 	"github.com/biodoia/bismuth/internal/voice"
 	"github.com/spf13/cobra"
 )
@@ -72,15 +75,15 @@ var (
 		Use:   "cli",
 		Short: "Operator CLI: list-agents, list-tasks, spawn, send, read, assign, kill, merge, status, skill-install",
 	}
-	cliListAgentsCmd  = &cobra.Command{Use: "list-agents", RunE: runCLIListAgents}
-	cliListTasksCmd   = &cobra.Command{Use: "list-tasks", RunE: runCLIListTasks}
-	cliSpawnCmd       = &cobra.Command{Use: "spawn", RunE: runCLISpawn}
-	cliSendCmd        = &cobra.Command{Use: "send", RunE: runCLISend}
-	cliReadCmd        = &cobra.Command{Use: "read", RunE: runCLIRead}
-	cliAssignCmd      = &cobra.Command{Use: "assign", RunE: runCLIAssign}
-	cliKillCmd        = &cobra.Command{Use: "kill", RunE: runCLIKill}
-	cliMergeCmd       = &cobra.Command{Use: "merge", RunE: runCLIMerge}
-	cliStatusCmd      = &cobra.Command{Use: "status", RunE: runCLIStatus}
+	cliListAgentsCmd   = &cobra.Command{Use: "list-agents", RunE: runCLIListAgents}
+	cliListTasksCmd    = &cobra.Command{Use: "list-tasks", RunE: runCLIListTasks}
+	cliSpawnCmd        = &cobra.Command{Use: "spawn", RunE: runCLISpawn}
+	cliSendCmd         = &cobra.Command{Use: "send", RunE: runCLISend}
+	cliReadCmd         = &cobra.Command{Use: "read", RunE: runCLIRead}
+	cliAssignCmd       = &cobra.Command{Use: "assign", RunE: runCLIAssign}
+	cliKillCmd         = &cobra.Command{Use: "kill", RunE: runCLIKill}
+	cliMergeCmd        = &cobra.Command{Use: "merge", RunE: runCLIMerge}
+	cliStatusCmd       = &cobra.Command{Use: "status", RunE: runCLIStatus}
 	cliSkillInstallCmd = &cobra.Command{Use: "skill-install", RunE: runCLISkillInstall}
 )
 
@@ -151,6 +154,30 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}
 
 	srv := api.NewServer(cfg, store, busServer, paneMgr, voiceGW, auditLog, sec, catalog, repoRoot)
+
+	// P7-d: Telegram/Discord bridge — notifications + remote commands.
+	bcfg := bridge.Config{
+		TelegramToken:     cfg.Bridge.TelegramToken,
+		TelegramChatID:    cfg.Bridge.TelegramChatID,
+		DiscordWebhookURL: cfg.Bridge.DiscordWebhookURL,
+		APIBase:           cfg.Bridge.APIBase,
+		PollInterval:      time.Duration(cfg.Bridge.PollIntervalMS) * time.Millisecond,
+	}
+	if bcfg.Enabled() {
+		br := bridge.New(bcfg, sqlDB)
+		go func() { _ = br.Run(ctx) }()
+		logger.Info("bridge enabled",
+			"telegram", bcfg.TelegramToken != "", "discord", bcfg.DiscordWebhookURL != "")
+	}
+
+	// P7-c: Mem0 primary with FTS5 fallback when configured.
+	if m0 := (sharedmem.Mem0Config{BaseURL: cfg.Memory.Mem0BaseURL, APIKey: cfg.Memory.Mem0APIKey}); m0.Enabled() {
+		if fts, err := sharedmem.New(sqlDB); err == nil {
+			srv.SetMemory(sharedmem.NewFallback(sharedmem.NewMem0(m0), fts))
+			logger.Info("shared memory: mem0 primary with fts5 fallback", "base_url", m0.BaseURL)
+		}
+	}
+
 	return srv.Run(ctx)
 }
 
