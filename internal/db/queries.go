@@ -17,6 +17,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/biodoia/bismuth/internal/shared"
@@ -55,6 +56,7 @@ type Agent struct {
 	CreatedAt    string          `json:"created_at"`
 	UpdatedAt    string          `json:"updated_at"`
 	Meta         json.RawMessage `json:"meta"`
+	Tenant       string          `json:"tenant"`
 }
 
 // MarshalJSON overrides default to render sql.Null* fields cleanly.
@@ -107,14 +109,17 @@ func (s *Store) InsertAgent(ctx context.Context, a *Agent) error {
 	if a.Meta == nil {
 		a.Meta = shared.JSONRaw(map[string]any{})
 	}
+	if a.Tenant == "" {
+		a.Tenant = "default"
+	}
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO agents(id, role, name, cli, pid, state, pane_id, worktree_path,
 			branch, model, cost_usd, tokens_in, tokens_out, task_id, created_at,
-			updated_at, meta)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			updated_at, meta, tenant)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		a.ID, a.Role, a.Name, a.CLI, a.PID, a.State, a.PaneID, a.WorktreePath,
 		a.Branch, a.Model, nullableFloat(a.CostUSD), a.TokensIn, a.TokensOut,
-		a.TaskID, a.CreatedAt, a.UpdatedAt, string(a.Meta))
+		a.TaskID, a.CreatedAt, a.UpdatedAt, string(a.Meta), a.Tenant)
 	return err
 }
 
@@ -146,12 +151,21 @@ func (s *Store) GetAgent(ctx context.Context, id string) (*Agent, error) {
 	return scanAgent(row)
 }
 
-func (s *Store) ListAgents(ctx context.Context, state string) ([]*Agent, error) {
+// ListAgents filters by state and tenant; empty values mean "any".
+func (s *Store) ListAgents(ctx context.Context, state, tenant string) ([]*Agent, error) {
 	q := agentSelect
+	var where []string
 	args := []any{}
 	if state != "" {
-		q += ` WHERE state = ?`
+		where = append(where, `state = ?`)
 		args = append(args, state)
+	}
+	if tenant != "" {
+		where = append(where, `tenant = ?`)
+		args = append(args, tenant)
+	}
+	if len(where) > 0 {
+		q += ` WHERE ` + strings.Join(where, ` AND `)
 	}
 	q += ` ORDER BY created_at ASC`
 	rows, err := s.db.QueryContext(ctx, q, args...)
@@ -177,7 +191,7 @@ func (s *Store) DeleteAgent(ctx context.Context, id string) error {
 
 const agentSelect = `SELECT id, role, name, cli, pid, state, pane_id,
 	worktree_path, branch, model, cost_usd, tokens_in, tokens_out, task_id,
-	created_at, updated_at, meta FROM agents`
+	created_at, updated_at, meta, tenant FROM agents`
 
 type rowScanner interface {
 	Scan(dest ...any) error
@@ -189,7 +203,7 @@ func scanAgent(r rowScanner) (*Agent, error) {
 	if err := r.Scan(&a.ID, &a.Role, &a.Name, &a.CLI, &a.PID, &a.State,
 		&a.PaneID, &a.WorktreePath, &a.Branch, &a.Model, &a.CostUSD,
 		&a.TokensIn, &a.TokensOut, &a.TaskID, &a.CreatedAt, &a.UpdatedAt,
-		&meta); err != nil {
+		&meta, &a.Tenant); err != nil {
 		return nil, err
 	}
 	a.Meta = json.RawMessage(meta)
@@ -217,6 +231,7 @@ type Task struct {
 	StartedAt     sql.NullString  `json:"started_at"`
 	FinishedAt    sql.NullString  `json:"finished_at"`
 	Meta          json.RawMessage `json:"meta"`
+	Tenant        string          `json:"tenant"`
 }
 
 func (t Task) MarshalJSON() ([]byte, error) {
@@ -263,15 +278,18 @@ func (s *Store) InsertTask(ctx context.Context, t *Task) error {
 	if t.Meta == nil {
 		t.Meta = shared.JSONRaw(map[string]any{})
 	}
+	if t.Tenant == "" {
+		t.Tenant = "default"
+	}
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO tasks(id, title, description, status, priority, parent_id,
 			assignee_agent_id, plan, branch, worktree_path, pr_url, cost_ceiling_usd,
-			cost_used_usd, created_at, updated_at, started_at, finished_at, meta)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			cost_used_usd, created_at, updated_at, started_at, finished_at, meta, tenant)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		t.ID, t.Title, t.Description, t.Status, t.Priority, t.ParentID,
 		t.AssigneeAgent, t.Plan, t.Branch, t.WorktreePath, t.PRURL,
 		nullableFloat(t.CostCeilUSD), nullableFloat(t.CostUsedUSD),
-		t.CreatedAt, t.UpdatedAt, t.StartedAt, t.FinishedAt, string(t.Meta))
+		t.CreatedAt, t.UpdatedAt, t.StartedAt, t.FinishedAt, string(t.Meta), t.Tenant)
 	return err
 }
 
@@ -315,12 +333,21 @@ func (s *Store) GetTask(ctx context.Context, id string) (*Task, error) {
 	return scanTask(row)
 }
 
-func (s *Store) ListTasks(ctx context.Context, status string) ([]*Task, error) {
+// ListTasks filters by status and tenant; empty values mean "any".
+func (s *Store) ListTasks(ctx context.Context, status, tenant string) ([]*Task, error) {
 	q := taskSelect
+	var where []string
 	args := []any{}
 	if status != "" {
-		q += ` WHERE status = ?`
+		where = append(where, `status = ?`)
 		args = append(args, status)
+	}
+	if tenant != "" {
+		where = append(where, `tenant = ?`)
+		args = append(args, tenant)
+	}
+	if len(where) > 0 {
+		q += ` WHERE ` + strings.Join(where, ` AND `)
 	}
 	q += ` ORDER BY priority DESC, created_at ASC`
 	rows, err := s.db.QueryContext(ctx, q, args...)
@@ -341,7 +368,7 @@ func (s *Store) ListTasks(ctx context.Context, status string) ([]*Task, error) {
 
 const taskSelect = `SELECT id, title, description, status, priority, parent_id,
 	assignee_agent_id, plan, branch, worktree_path, pr_url, cost_ceiling_usd,
-	cost_used_usd, created_at, updated_at, started_at, finished_at, meta FROM tasks`
+	cost_used_usd, created_at, updated_at, started_at, finished_at, meta, tenant FROM tasks`
 
 func scanTask(r rowScanner) (*Task, error) {
 	var t Task
@@ -349,7 +376,7 @@ func scanTask(r rowScanner) (*Task, error) {
 	if err := r.Scan(&t.ID, &t.Title, &t.Description, &t.Status, &t.Priority,
 		&t.ParentID, &t.AssigneeAgent, &t.Plan, &t.Branch, &t.WorktreePath,
 		&t.PRURL, &t.CostCeilUSD, &t.CostUsedUSD, &t.CreatedAt, &t.UpdatedAt,
-		&t.StartedAt, &t.FinishedAt, &meta); err != nil {
+		&t.StartedAt, &t.FinishedAt, &meta, &t.Tenant); err != nil {
 		return nil, err
 	}
 	t.Meta = json.RawMessage(meta)
@@ -492,13 +519,13 @@ func (s *Store) MarkMessageRead(ctx context.Context, id string) error {
 // ----------------- panes ---------------------------------------------------
 
 type Pane struct {
-	ID            string
-	AgentID       sql.NullString
-	Scrollback    sql.NullString
-	LastState     sql.NullString
-	LastStateAt   sql.NullString
-	Cols          int
-	Rows          int
+	ID          string
+	AgentID     sql.NullString
+	Scrollback  sql.NullString
+	LastState   sql.NullString
+	LastStateAt sql.NullString
+	Cols        int
+	Rows        int
 }
 
 func (s *Store) UpsertPane(ctx context.Context, p *Pane) error {

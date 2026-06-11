@@ -146,6 +146,31 @@ paths:
                   ok:
                     type: boolean
 
+  /api/v1/agents/{id}/stream:
+    get:
+      summary: Live agent output and state as Server-Sent Events
+      description: >
+        text/event-stream with `output` events
+        (`data: {"chunk_b64":"..."}`) and `state` events
+        (`data: {"state":"working|idle|exited"}`). Heartbeat comments
+        every 15s. Backfill scrollback via /read, then follow this.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        "404":
+          description: Pane gone — fall back to /read polling
+        "409":
+          description: Agent has no pane
+
   /api/v1/agents/{id}/kill:
     post:
       summary: Kill an agent
@@ -280,6 +305,41 @@ paths:
                     type: array
                     items:
                       $ref: "#/components/schemas/Event"
+
+  /api/v1/audit:
+    get:
+      summary: Tamper-evident audit trail, newest first
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+            maximum: 500
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  entries:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        seq: { type: integer }
+                        ts: { type: string }
+                        actor: { type: string }
+                        action: { type: string }
+                        target: { type: string }
+                        payload: { type: string }
+                        row_hash: { type: string }
 
   /api/v1/roles:
     get:

@@ -59,6 +59,14 @@ func (s *Store) Close() error { return s.db.Close() }
 func (s *Store) DB() *sql.DB { return s.db }
 
 func (s *Store) migrate(ctx context.Context) error {
+	// Track applied migrations so non-idempotent statements (ALTER TABLE
+	// ADD COLUMN has no IF NOT EXISTS in SQLite) run exactly once.
+	if _, err := s.db.ExecContext(ctx,
+		`CREATE TABLE IF NOT EXISTS schema_migrations(
+			name TEXT PRIMARY KEY,
+			applied_at TEXT NOT NULL DEFAULT (datetime('now')))`); err != nil {
+		return err
+	}
 	entries, err := fs.ReadDir(migrationsFS, "migrations")
 	if err != nil {
 		return err
@@ -71,12 +79,24 @@ func (s *Store) migrate(ctx context.Context) error {
 	}
 	sort.Strings(names) // 001_*.sql, 002_*.sql, ...
 	for _, n := range names {
+		var seen int
+		if err := s.db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM schema_migrations WHERE name=?`, n).Scan(&seen); err != nil {
+			return err
+		}
+		if seen > 0 {
+			continue
+		}
 		b, err := fs.ReadFile(migrationsFS, "migrations/"+n)
 		if err != nil {
 			return err
 		}
 		if _, err := s.db.ExecContext(ctx, string(b)); err != nil {
 			return fmt.Errorf("apply %s: %w", n, err)
+		}
+		if _, err := s.db.ExecContext(ctx,
+			`INSERT INTO schema_migrations(name) VALUES(?)`, n); err != nil {
+			return err
 		}
 	}
 	return nil

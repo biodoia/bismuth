@@ -77,6 +77,17 @@ type Pane struct {
 
 	// stateTimer flips the pane to "idle" after a quiet period.
 	stateTimer *time.Timer
+
+	// subs receive live output/state frames (SSE attach). Sends are
+	// non-blocking: a slow consumer drops frames and backfills via /read.
+	subs map[chan StreamEvent]struct{}
+}
+
+// StreamEvent is one frame delivered to pane stream subscribers.
+type StreamEvent struct {
+	Type  string // "output" | "state"
+	Data  []byte // output chunk (Type == "output")
+	State string // new state (Type == "state")
 }
 
 // NewManager creates a pane manager. It does not spawn anything yet.
@@ -227,6 +238,43 @@ func (m *Manager) deliverInitialInput(p *Pane, input []byte) {
 	_, _ = p.PTY.Write(payload)
 }
 
+// Attach subscribes to a pane's live output/state stream. The returned
+// cancel func must be called to detach. The channel is never closed by
+// the manager; consumers stop on cancel/ctx instead.
+func (m *Manager) Attach(paneID string) (<-chan StreamEvent, func(), error) {
+	m.mu.RLock()
+	p, ok := m.panes[paneID]
+	m.mu.RUnlock()
+	if !ok {
+		return nil, nil, fmt.Errorf("pane %s not found", paneID)
+	}
+	ch := make(chan StreamEvent, 256)
+	p.mu.Lock()
+	if p.subs == nil {
+		p.subs = make(map[chan StreamEvent]struct{})
+	}
+	p.subs[ch] = struct{}{}
+	p.mu.Unlock()
+	cancel := func() {
+		p.mu.Lock()
+		delete(p.subs, ch)
+		p.mu.Unlock()
+	}
+	return ch, cancel, nil
+}
+
+// broadcast fans a frame out to all subscribers without blocking.
+func (p *Pane) broadcast(ev StreamEvent) {
+	p.mu.Lock()
+	for ch := range p.subs {
+		select {
+		case ch <- ev:
+		default: // slow consumer: drop, /read backfills
+		}
+	}
+	p.mu.Unlock()
+}
+
 // Send writes bytes to the pane's PTY stdin.
 func (m *Manager) Send(ctx context.Context, paneID string, b []byte) error {
 	m.mu.RLock()
@@ -329,6 +377,10 @@ func (m *Manager) readLoop(p *Pane, agentID string) {
 				TS:      time.Now().UTC().Format(time.RFC3339),
 			})
 
+			// Live stream fanout. chunk aliases buf (reused on the next
+			// Read), so subscribers get their own copy.
+			p.broadcast(StreamEvent{Type: "output", Data: append([]byte(nil), chunk...)})
+
 			// V1 state heuristic: output means working; quiet means idle.
 			m.markState(p, agentID, "working")
 			m.armIdleTimer(p, agentID)
@@ -383,6 +435,7 @@ func (m *Manager) markState(p *Pane, agentID, state string) {
 		Payload: shared.JSONRaw(map[string]any{"pane_id": p.ID, "state": state}),
 		TS:      now,
 	})
+	p.broadcast(StreamEvent{Type: "state", State: state})
 }
 
 // armIdleTimer (re)starts the quiet-period timer that flips the pane to

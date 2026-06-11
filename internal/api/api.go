@@ -51,6 +51,7 @@ import (
 	"github.com/biodoia/bismuth/internal/bus"
 	"github.com/biodoia/bismuth/internal/config"
 	"github.com/biodoia/bismuth/internal/db"
+	"github.com/biodoia/bismuth/internal/livekit"
 	"github.com/biodoia/bismuth/internal/logger"
 	"github.com/biodoia/bismuth/internal/metrics"
 	"github.com/biodoia/bismuth/internal/pane"
@@ -75,7 +76,8 @@ type Server struct {
 	voice  *voice.Gateway
 	audit  *audit.Log
 	sec    *security.Policy
-	mem    *sharedmem.Store
+	mem    sharedmem.Provider
+	lk     *livekit.Manager
 
 	repoRoot string
 	catalog  roles.Catalog
@@ -113,9 +115,26 @@ func NewServer(
 			CheckOrigin:     func(r *http.Request) bool { return true },
 		},
 	}
-	// Initialize shared memory store (nil-safe, 503 if FTS5 unavailable)
-	s.mem, _ = sharedmem.New(store.DB())
+	// Initialize shared memory store (nil-safe, 503 if FTS5 unavailable).
+	// Assign only on success: a typed-nil *Store inside the interface
+	// would defeat the nil checks in the memory handlers.
+	if m, err := sharedmem.New(store.DB()); err == nil && m != nil {
+		s.mem = m
+	}
+	// P7-a: real LiveKit when configured; disabled manager keeps the
+	// voice-room endpoints answering with the V1 stub payloads.
+	s.lk = livekit.NewManager(livekit.Config{
+		URL: cfg.LiveKit.URL, APIKey: cfg.LiveKit.APIKey, APISecret: cfg.LiveKit.APISecret,
+	})
 	return s
+}
+
+// SetMemory swaps the shared-memory backend (P7-c): main wires the
+// Mem0+FTS5 fallback here when configured.
+func (s *Server) SetMemory(p sharedmem.Provider) {
+	if p != nil {
+		s.mem = p
+	}
 }
 
 // Run starts the HTTP server until ctx is cancelled.
@@ -142,6 +161,7 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/", s.getAgent)
 			r.Post("/send", s.sendToAgent)
 			r.Get("/read", s.readAgent)
+			r.Get("/stream", s.streamAgent)
 			r.Post("/kill", s.killAgent)
 		})
 	})
@@ -159,6 +179,7 @@ func (s *Server) Handler() http.Handler {
 
 	r.Get("/api/v1/roles", s.listRoles)
 	r.Get("/api/v1/events", s.recentEvents)
+	r.Get("/api/v1/audit", s.listAudit)
 	r.Get("/api/v1/ws", s.wsSubscribe)
 
 	// voice (V1 HTTP)
@@ -283,6 +304,14 @@ func (s *statusRecorder) WriteHeader(c int) {
 	s.ResponseWriter.WriteHeader(c)
 }
 
+// Flush forwards to the underlying writer so SSE streaming works through
+// the logging/metrics middleware wrappers.
+func (s *statusRecorder) Flush() {
+	if f, ok := s.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
 // ----------------- helpers ------------------------------------------------
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
@@ -305,9 +334,18 @@ func writeErr(w http.ResponseWriter, code int, err error) {
 
 // ----------------- agent handlers ----------------------------------------
 
+// tenantFrom resolves the request's namespace (P7-e). V1: an explicit
+// X-Bismuth-Tenant header, defaulting to the shared "default" namespace.
+func tenantFrom(r *http.Request) string {
+	if t := strings.TrimSpace(r.Header.Get("X-Bismuth-Tenant")); t != "" {
+		return t
+	}
+	return "default"
+}
+
 func (s *Server) listAgents(w http.ResponseWriter, r *http.Request) {
 	state := r.URL.Query().Get("state")
-	agents, err := s.store.ListAgents(r.Context(), state)
+	agents, err := s.store.ListAgents(r.Context(), state, tenantFrom(r))
 	if err != nil {
 		writeErr(w, 500, err)
 		return
@@ -367,6 +405,8 @@ func (s *Server) spawnAgent(w http.ResponseWriter, r *http.Request) {
 		wtPath, branch, _ = wt.Create(r.Context(), taskID, "main")
 	}
 
+	tenant := tenantFrom(r)
+
 	// persist task first (so agent can reference it)
 	if req.Task != "" {
 		_ = s.store.InsertTask(r.Context(), &db.Task{
@@ -377,6 +417,7 @@ func (s *Server) spawnAgent(w http.ResponseWriter, r *http.Request) {
 			Priority:     0,
 			Branch:       sql.NullString{String: branch, Valid: branch != ""},
 			WorktreePath: sql.NullString{String: wtPath, Valid: wtPath != ""},
+			Tenant:       tenant,
 		})
 	}
 
@@ -393,6 +434,7 @@ func (s *Server) spawnAgent(w http.ResponseWriter, r *http.Request) {
 		Branch:       sql.NullString{String: branch, Valid: branch != ""},
 		Model:        sql.NullString{String: role.DefaultModel, Valid: role.DefaultModel != ""},
 		TaskID:       sql.NullString{String: taskID, Valid: true},
+		Tenant:       tenant,
 	})
 
 	// spawn pane
@@ -549,6 +591,84 @@ func (s *Server) readAgent(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// streamAgent serves the agent's live PTY output and state transitions
+// as Server-Sent Events (P7-j):
+//
+//	event: output  data: {"chunk_b64":"..."}
+//	event: state   data: {"state":"working|idle|exited"}
+//
+// Clients backfill history via /read?n= and then follow this stream.
+func (s *Server) streamAgent(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	a, err := s.store.GetAgent(r.Context(), id)
+	if err != nil {
+		writeErr(w, 404, err)
+		return
+	}
+	if !a.PaneID.Valid {
+		writeErr(w, 409, errors.New("agent has no pane"))
+		return
+	}
+	ch, cancel, err := s.pane.Attach(a.PaneID.String)
+	if err != nil {
+		writeErr(w, 404, err) // pane gone: client falls back to /read polling
+		return
+	}
+	defer cancel()
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeErr(w, 500, errors.New("streaming unsupported"))
+		return
+	}
+
+	h := w.Header()
+	h.Set("Content-Type", "text/event-stream")
+	h.Set("Cache-Control", "no-cache")
+	h.Set("Connection", "keep-alive")
+	h.Set("X-Accel-Buffering", "no")
+	w.WriteHeader(200)
+
+	// Initial state snapshot so the client renders a badge immediately.
+	if p, err := s.store.GetPane(r.Context(), a.PaneID.String); err == nil && p.LastState.Valid {
+		fmt.Fprintf(w, "event: state\ndata: {\"state\":%q}\n\n", p.LastState.String)
+	}
+	flusher.Flush()
+
+	ping := time.NewTicker(15 * time.Second)
+	defer ping.Stop()
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-ping.C:
+			fmt.Fprint(w, ": ping\n\n")
+			flusher.Flush()
+		case ev := <-ch:
+			switch ev.Type {
+			case "output":
+				fmt.Fprintf(w, "event: output\ndata: {\"chunk_b64\":%q}\n\n",
+					base64.StdEncoding.EncodeToString(ev.Data))
+			case "state":
+				fmt.Fprintf(w, "event: state\ndata: {\"state\":%q}\n\n", ev.State)
+			}
+			flusher.Flush()
+		}
+	}
+}
+
+// listAudit exposes the tamper-evident audit trail (P7-h).
+func (s *Server) listAudit(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	limit, _ := strconv.Atoi(q.Get("limit"))
+	offset, _ := strconv.Atoi(q.Get("offset"))
+	entries, err := s.audit.Recent(r.Context(), limit, offset)
+	if err != nil {
+		writeErr(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"entries": entries})
+}
+
 func (s *Server) killAgent(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if u := security.UserFromContext(r.Context()); u != nil && !u.CanKill() {
@@ -580,7 +700,7 @@ func (s *Server) killAgent(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 	status := r.URL.Query().Get("status")
-	tasks, err := s.store.ListTasks(r.Context(), status)
+	tasks, err := s.store.ListTasks(r.Context(), status, tenantFrom(r))
 	if err != nil {
 		writeErr(w, 500, err)
 		return
@@ -622,6 +742,7 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		Status:      "open",
 		Priority:    req.Priority,
 		ParentID:    sql.NullString{String: req.ParentID, Valid: req.ParentID != ""},
+		Tenant:      tenantFrom(r),
 	}
 	if err := s.store.InsertTask(r.Context(), t); err != nil {
 		writeErr(w, 500, err)
@@ -845,17 +966,38 @@ func (s *Server) voiceSpeak(w http.ResponseWriter, r *http.Request) {
 
 type voiceCommandReq struct {
 	Text string `json:"text"`
+	// Continuous marks always-on listening (P7-b): the utterance is only
+	// acted upon when it starts with the configured wake word.
+	Continuous bool `json:"continuous"`
 }
 
 // voiceCommand parses the transcribed text and dispatches a bismuth
 // action. V1: simple keyword match. V2: use Hermes/LLM to interpret.
+//
+// Wake-word (P7-b): in continuous mode utterances that do not start
+// with cfg.Voice.WakeWord are acknowledged with ignored=true and never
+// parsed, so an always-listening client doesn't trigger on ambient
+// speech. The wake word itself is stripped before parsing.
 func (s *Server) voiceCommand(w http.ResponseWriter, r *http.Request) {
 	var req voiceCommandReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, 400, err)
 		return
 	}
-	action, args := parseVoiceCommand(req.Text)
+	text := req.Text
+	if req.Continuous {
+		wake := strings.ToLower(strings.TrimSpace(s.cfg.Voice.WakeWord))
+		if wake == "" {
+			wake = "bismuth"
+		}
+		low := strings.ToLower(strings.TrimSpace(text))
+		if !strings.HasPrefix(low, wake) {
+			writeJSON(w, 200, map[string]any{"heard": req.Text, "ignored": true})
+			return
+		}
+		text = strings.TrimLeft(strings.TrimSpace(text)[len(wake):], " ,.:;!?")
+	}
+	action, args := parseVoiceCommand(text)
 	resp := map[string]any{"heard": req.Text, "action": action, "args": args, "text_response": fmt.Sprintf("Ho capito: %s %v", action, args)}
 	writeJSON(w, 200, resp)
 }
@@ -1019,7 +1161,8 @@ func (s *Server) queryMemory(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) createVoiceRoom(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		AgentID string `json:"agent_id"`
+		AgentID  string `json:"agent_id"`
+		Identity string `json:"identity"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, 400, err)
@@ -1029,18 +1172,53 @@ func (s *Server) createVoiceRoom(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, fmt.Errorf("agent_id required"))
 		return
 	}
-	logger.Info("voice room create request", "agent_id", req.AgentID)
-	// Stub: return placeholder room info
+	room := "bismuth-" + req.AgentID
+	logger.Info("voice room create request", "agent_id", req.AgentID, "livekit", s.lk.Enabled())
+
+	// P7-a: real LiveKit path — create the room and mint a join token.
+	if s.lk.Enabled() {
+		if err := s.lk.CreateRoom(r.Context(), room); err != nil {
+			writeErr(w, 502, fmt.Errorf("livekit create room: %w", err))
+			return
+		}
+		identity := req.Identity
+		if identity == "" {
+			identity = "user"
+		}
+		token, err := s.lk.JoinToken(room, identity, time.Hour)
+		if err != nil {
+			writeErr(w, 500, fmt.Errorf("livekit token: %w", err))
+			return
+		}
+		writeJSON(w, 201, map[string]any{
+			"room_name": room,
+			"agent_id":  req.AgentID,
+			"state":     "active",
+			"token":     token,
+			"url":       s.cfg.LiveKit.URL,
+		})
+		return
+	}
+
+	// Disabled: keep the V1 stub payload.
 	writeJSON(w, 201, map[string]any{
-		"room_name": "bismuth-" + req.AgentID,
+		"room_name": room,
 		"agent_id":  req.AgentID,
 		"state":     "active",
-		"note":      "LiveKit stub — connect real SFU for production",
+		"note":      "LiveKit stub — configure livekit.url/api_key/api_secret for a real SFU",
 	})
 }
 
 func (s *Server) listVoiceRooms(w http.ResponseWriter, r *http.Request) {
-	// Stub: return empty list
+	if s.lk.Enabled() {
+		rooms, err := s.lk.ListRooms(r.Context())
+		if err != nil {
+			writeErr(w, 502, fmt.Errorf("livekit list rooms: %w", err))
+			return
+		}
+		writeJSON(w, 200, map[string]any{"rooms": rooms})
+		return
+	}
 	writeJSON(w, 200, map[string]any{"rooms": []any{}})
 }
 
@@ -1050,6 +1228,12 @@ func (s *Server) endVoiceRoom(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, fmt.Errorf("room query param required"))
 		return
 	}
-	logger.Info("voice room end request", "room", roomName)
+	logger.Info("voice room end request", "room", roomName, "livekit", s.lk.Enabled())
+	if s.lk.Enabled() {
+		if err := s.lk.DeleteRoom(r.Context(), roomName); err != nil {
+			writeErr(w, 502, fmt.Errorf("livekit delete room: %w", err))
+			return
+		}
+	}
 	writeJSON(w, 200, map[string]any{"room": roomName, "state": "ended"})
 }
